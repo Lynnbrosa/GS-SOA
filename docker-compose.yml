@@ -1,0 +1,87 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orbittapi-postgres
+    environment:
+      POSTGRES_USER: orbittapi
+      POSTGRES_PASSWORD: orbittapi
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - orbittapi-postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orbittapi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: orbittapi-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - orbittapi-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  identity-service:
+    build:
+      context: .
+      dockerfile: identity-service/Dockerfile
+    container_name: orbittapi-identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/identity_db
+      SPRING_DATASOURCE_USERNAME: orbittapi
+      SPRING_DATASOURCE_PASSWORD: orbittapi
+      ORBITTAPI_JWT_SECRET: ${ORBITTAPI_JWT_SECRET:-change-me-in-production-this-must-be-at-least-32-bytes-long}
+    ports:
+      - "8081:8081"
+
+  satellite-service:
+    build:
+      context: .
+      dockerfile: satellite-service/Dockerfile
+    container_name: orbittapi-satellite
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/satellite_db
+      SPRING_DATASOURCE_USERNAME: orbittapi
+      SPRING_DATASOURCE_PASSWORD: orbittapi
+      SPRING_REDIS_HOST: redis
+      SPRING_REDIS_PORT: 6379
+    ports:
+      - "8082:8082"
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: orbittapi-gateway
+    depends_on:
+      identity-service:
+        condition: service_started
+      satellite-service:
+        condition: service_started
+    environment:
+      IDENTITY_SERVICE_URI: http://identity-service:8081
+      SATELLITE_SERVICE_URI: http://satellite-service:8082
+      ORBITTAPI_JWT_SECRET: ${ORBITTAPI_JWT_SECRET:-change-me-in-production-this-must-be-at-least-32-bytes-long}
+    ports:
+      - "8080:8080"
+
+volumes:
+  orbittapi-postgres-data:
+  orbittapi-redis-data:

@@ -1,0 +1,45 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: identity-service
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/identity_db}
+    username: ${SPRING_DATASOURCE_USERNAME:orbittapi}
+    password: ${SPRING_DATASOURCE_PASSWORD:orbittapi}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+    open-in-view: false
+
+orbittapi:
+  jwt:
+    secret: ${ORBITTAPI_JWT_SECRET:change-me-in-production-this-must-be-at-least-32-bytes-long}
+    expiration-seconds: 86400
+    issuer: orbittapi-identity
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    br.com.orbittapi: INFO
+    org.springframework.security: WARN

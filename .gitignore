@@ -1,0 +1,47 @@
+# Build outputs
+target/
+build/
+out/
+dist/
+*.class
+*.jar
+*.war
+*.ear
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# IDEs
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.eclipse/
+.settings/
+.project
+.classpath
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Node (defesa, mesmo sem front aqui)
+node_modules/
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Docker
+.docker/
