@@ -30,22 +30,24 @@ public class RedisSatelliteQueryCache implements SatelliteQueryCache {
 
     @Override
     public Optional<LandUseSnapshot> getLandUse(Coordinate c) {
-        return get(landUseKey(c), LandUseSnapshot.class);
+        return get(landUseKey(c), CacheableSnapshots.LandUseDto.class)
+                .map(CacheableSnapshots.LandUseDto::toDomain);
     }
 
     @Override
     public void putLandUse(Coordinate c, LandUseSnapshot snapshot) {
-        put(landUseKey(c), snapshot);
+        put(landUseKey(c), CacheableSnapshots.LandUseDto.fromDomain(snapshot));
     }
 
     @Override
     public Optional<VegetationSnapshot> getVegetation(Coordinate c) {
-        return get(vegetationKey(c), VegetationSnapshot.class);
+        return get(vegetationKey(c), CacheableSnapshots.VegetationDto.class)
+                .map(CacheableSnapshots.VegetationDto::toDomain);
     }
 
     @Override
     public void putVegetation(Coordinate c, VegetationSnapshot snapshot) {
-        put(vegetationKey(c), snapshot);
+        put(vegetationKey(c), CacheableSnapshots.VegetationDto.fromDomain(snapshot));
     }
 
     private <T> Optional<T> get(String key, Class<T> type) {
