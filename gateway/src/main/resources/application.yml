@@ -6,6 +6,15 @@ spring:
     name: gateway
   cloud:
     gateway:
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+            allowedHeaders: "*"
+            exposedHeaders: ["Authorization", "Content-Type", "X-User-Id"]
+            allowCredentials: false
+            maxAge: 3600
       routes:
         - id: identity-auth
           uri: ${IDENTITY_SERVICE_URI:http://localhost:8081}
