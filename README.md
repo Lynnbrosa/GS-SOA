@@ -3,7 +3,15 @@
 > Global Solution 2026.1 — Disciplinas combinadas de **SOA** e **DDD** (entrega única em Java).
 > Tema do semestre: **Indústria Espacial**. ODS principal: **13 (Clima)**. ODS secundário: **2 (Agricultura)**.
 
-OrbittAPI é uma plataforma SaaS de **dados satelitais** (NDVI, uso do solo, risco de alagamento, desmatamento, expansão urbana) entregue via API REST. Este repositório implementa o **backend** com 2 microserviços + 1 gateway, escritos em Java 21 / Spring Boot 3.3.
+OrbittAPI é uma plataforma SaaS de **dados satelitais** (NDVI, uso do solo, risco de alagamento, desmatamento, expansão urbana) entregue via API REST + Web Service SOAP. Este repositório implementa o **backend** com 2 microserviços de domínio + 1 API gateway + 1 SOAP gateway opcional, escritos em Java 21 / Spring Boot 3.3.
+
+## 📄 Documentação oficial de entrega (PDF)
+
+O documento completo da Global Solution está em **[`docs/Documentacao_GS_OrbittAPI.pdf`](docs/Documentacao_GS_OrbittAPI.pdf)** (15 páginas, autossuficiente, sem links externos clicáveis).
+
+Cobre as 13 seções exigidas: integrantes/RMs, descrição da solução, problema, objetivos, arquitetura, diagrama SOA, API REST, Web Service SOAP, integração entre serviços, tecnologias, **evidências de funcionamento (10 prints reais)**, **prints dos testes (`mvn test` 39/39)** e conclusão.
+
+Para regerar o PDF e os prints: `python docs/generate_pdf.py`.
 
 ## Como a solução se conecta à Indústria Espacial e aos ODS
 
@@ -67,8 +75,12 @@ orbittapi-backend/
 ├── pom.xml                       # parent multi-modulo
 ├── docker-compose.yml            # sobe tudo
 ├── docs/
-│   └── architecture.md           # bounded contexts + mapeamento DDD <-> codigo
+│   ├── Documentacao_GS_OrbittAPI.pdf   # *** ENTREGA OFICIAL (15 paginas) ***
+│   ├── architecture.md           # bounded contexts + mapeamento DDD <-> codigo
+│   ├── generate_pdf.py           # regera PDF + prints (Pillow + reportlab)
+│   └── screenshots/              # 11 PNGs estilo terminal usados como prints
 ├── docker/postgres/init.sql      # cria identity_db e satellite_db
+│   #                              (volumes orbittapi-postgres-data + orbittapi-redis-data)
 │
 ├── identity-service/             # bounded context: Identity & Access
 │   ├── pom.xml
@@ -137,8 +149,14 @@ Lista completa de mapeamento em [docs/architecture.md](docs/architecture.md).
 
 Pré-requisitos: Docker + Docker Compose. Nada mais — o build do Java acontece dentro dos containers.
 
+**Backend REST padrão (5 contêineres, igual ao que o app mobile consome):**
 ```bash
-docker-compose up --build
+docker compose up --build
+```
+
+**Backend + Web Service SOAP (6 contêineres):**
+```bash
+docker compose --profile soap up --build
 ```
 
 Aguarde os healthchecks ficarem `healthy`. Containers em pé:
@@ -147,9 +165,10 @@ Aguarde os healthchecks ficarem `healthy`. Containers em pé:
 - `orbittapi-redis` — porta 6379
 - `orbittapi-identity` — porta 8081
 - `orbittapi-satellite` — porta 8082
-- `orbittapi-gateway` — porta 8080 (entrada única)
+- `orbittapi-gateway` — porta 8080 (entrada única REST)
+- `orbittapi-soap` — porta 8083 (somente com `--profile soap`)
 
-Para derrubar: `docker-compose down` (volumes persistem). Para limpar volumes: `docker-compose down -v`.
+Para derrubar: `docker compose down` (volumes persistem). Para limpar volumes: `docker compose down -v`.
 
 ### Variável de ambiente importante
 - `ORBITTAPI_JWT_SECRET` — string ≥ 32 bytes usada para assinar JWTs no identity-service e validar no gateway. O default do compose é o mesmo para os dois serviços.
@@ -414,6 +433,9 @@ Outras histórias (front-end, billing, MFA, ingestão NASA real, ML) são extens
 ---
 
 ## Diferenciais implementados
+- **Web Service SOAP contract-first** (XSD → JAXB → WSDL em runtime) consumindo a API REST por baixo — integração REST↔SOAP real
+- **CRUD completo em Account** via `PUT /me` e `DELETE /accounts/{id}` (ADMIN-only) preservando invariantes do agregado
+- **Profile docker `soap`** — SOAP é opcional; subir só REST (5 contêineres) ou REST+SOAP (6 contêineres) sem regressão
 - Anti-corruption layer explícita (`SatelliteDataSource` porta + `MockSatelliteDataSource` adapter) — facilita trocar pelo NASA Earth API
 - Cache Redis com TTL 6h e logs de hit/miss
 - Validação centralizada por value object — coordenada inválida nunca chega no use case
@@ -421,19 +443,27 @@ Outras histórias (front-end, billing, MFA, ingestão NASA real, ML) são extens
 - Swagger por serviço (cada bounded context publica sua própria documentação)
 - Healthchecks via Actuator em todos os serviços
 - Dockerfile multi-stage por serviço, build incremental
+- **PDF de entrega autossuficiente** (15 páginas, 11 prints reais) versionado no repositório
 
 ---
 
 ## Definition of Done — checklist
 
-- [x] `docker-compose up` sobe os 5 contêineres sem erro
+- [x] `docker compose up` sobe os 5 contêineres sem erro
+- [x] `docker compose --profile soap up` sobe os 6 contêineres (incluindo SOAP)
 - [x] `POST /auth/register` cria conta + retorna JWT
+- [x] `PUT /me` atualiza e-mail (CRUD); `DELETE /accounts/{id}` restrito a ADMIN
 - [x] `GET /landuse?lat=-23.5&lng=-46.6` com Bearer retorna 200 + JSON estruturado
 - [x] `GET /landuse` sem token retorna 401 RFC 7807
-- [x] Segunda chamada idêntica é servida do cache (log mostra `Cache HIT`)
+- [x] Segunda chamada idêntica é servida do cache (`cacheHit: true`)
+- [x] WSDL acessível em `http://localhost:8083/ws/satellite.wsdl`
+- [x] SOAP `consultarVegetacao` retorna NDVI vindo do satellite via REST
+- [x] SOAP `registrarConsulta` persiste e retorna `queryId` UUID
+- [x] SOAP Fault em latitude inválida (`SOAP-ENV:Client`)
 - [x] Swagger UI em `/swagger-ui.html` por serviço
-- [x] `mvn test` passa
+- [x] `mvn test` passa (**39 testes verdes**)
 - [x] `docs/architecture.md` mapeia DDD ↔ código
+- [x] `docs/Documentacao_GS_OrbittAPI.pdf` (entrega oficial) com as 13 seções
 - [x] README completo
 
 ---
