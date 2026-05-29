@@ -7,6 +7,7 @@ import br.com.orbittapi.soap.exception.InvalidCoordinateSoapException;
 import br.com.orbittapi.soap.exception.SatelliteUnavailableSoapException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -27,8 +28,8 @@ public class SatelliteRestClient {
 
     private final RestClient client;
 
-    public SatelliteRestClient(RestClient satelliteRestClient) {
-        this.client = satelliteRestClient;
+    public SatelliteRestClient(@Qualifier("satelliteHttpClient") RestClient client) {
+        this.client = client;
     }
 
     public VegetationDto getVegetation(String userId, double lat, double lng) {

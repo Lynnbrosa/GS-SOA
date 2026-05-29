@@ -12,8 +12,8 @@ import org.springframework.web.client.RestClient;
 @EnableConfigurationProperties(SoapClientProperties.class)
 public class RestClientConfig {
 
-    @Bean
-    public RestClient satelliteRestClient(SoapClientProperties props) {
+    @Bean(name = "satelliteHttpClient")
+    public RestClient satelliteHttpClient(SoapClientProperties props) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(props.getConnectTimeoutMs());
         factory.setReadTimeout(props.getReadTimeoutMs());

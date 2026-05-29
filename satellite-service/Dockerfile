@@ -6,6 +6,7 @@ COPY pom.xml ./
 COPY identity-service/pom.xml identity-service/
 COPY satellite-service/pom.xml satellite-service/
 COPY gateway/pom.xml gateway/
+COPY soap-service/pom.xml soap-service/
 
 RUN mvn -B -pl satellite-service -am -DskipTests dependency:go-offline || true
 
