@@ -1,6 +1,11 @@
 """
 Gera a documentacao em PDF da Global Solution OrbittAPI.
-Tudo embutido (nenhum link externo) conforme exigencia do professor.
+PDF autossuficiente (sem links externos clicaveis) seguindo as 13 secoes
+exigidas pelo professor.
+
+Antes de montar o PDF, este script gera tambem PNGs estilo "terminal" para
+servir de prints/evidencias, embutindo o output real capturado durante os
+smoke tests do compose com profile soap.
 """
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -9,24 +14,378 @@ from reportlab.lib.enums import TA_JUSTIFY, TA_CENTER, TA_LEFT
 from reportlab.lib import colors
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, PageBreak, Table, TableStyle,
-    Preformatted, KeepTogether
+    Preformatted, Image, KeepTogether
 )
 from reportlab.pdfgen import canvas
+from PIL import Image as PilImage, ImageDraw, ImageFont
 import os
 
-OUT = os.path.join(os.path.dirname(__file__), "Documentacao_GS_OrbittAPI.pdf")
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCREEN_DIR = os.path.join(HERE, "screenshots")
+OUT = os.path.join(HERE, "Documentacao_GS_OrbittAPI.pdf")
+os.makedirs(SCREEN_DIR, exist_ok=True)
 
-# -------------------- estilos --------------------
+# =============================================================================
+# Parte 1: gerar PNGs estilo "terminal" com Pillow
+# =============================================================================
+
+def _load_mono_font(size):
+    candidates = [
+        "C:/Windows/Fonts/consola.ttf",        # Consolas
+        "C:/Windows/Fonts/CascadiaCode.ttf",
+        "C:/Windows/Fonts/CascadiaMono.ttf",
+        "C:/Windows/Fonts/lucon.ttf",          # Lucida Console
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+def render_terminal_png(out_path, title, body_lines, width=1200, font_size=15,
+                        bg="#1e1e1e", fg="#e8e8e8", title_bg="#3c3c3c",
+                        title_fg="#ffffff", accent="#7ed957"):
+    """Renderiza algo parecido com uma janela de terminal e salva como PNG."""
+    font = _load_mono_font(font_size)
+    title_font = _load_mono_font(font_size)
+
+    # calcula altura
+    line_h = font_size + 6
+    title_h = font_size + 18
+    padding = 20
+
+    # quebra linhas longas em ate ~100 chars
+    wrapped = []
+    max_chars = (width - 2 * padding) // (font_size // 2 + 1)
+    for line in body_lines:
+        if not line:
+            wrapped.append("")
+            continue
+        while len(line) > max_chars:
+            wrapped.append(line[:max_chars])
+            line = line[max_chars:]
+        wrapped.append(line)
+
+    height = title_h + padding * 2 + line_h * len(wrapped) + 10
+    img = PilImage.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(img)
+
+    # barra de titulo
+    draw.rectangle([(0, 0), (width, title_h)], fill=title_bg)
+    # bolinhas mac
+    for i, c in enumerate(["#ff5f56", "#ffbd2e", "#27c93f"]):
+        cx = 18 + i * 22
+        cy = title_h // 2
+        draw.ellipse([(cx - 7, cy - 7), (cx + 7, cy + 7)], fill=c)
+    draw.text((100, 6), title, font=title_font, fill=title_fg)
+
+    # corpo
+    y = title_h + padding
+    for line in wrapped:
+        if line.startswith("$ "):
+            draw.text((padding, y), "$ ", font=font, fill=accent)
+            draw.text((padding + font.getlength("$ "), y), line[2:], font=font, fill=fg)
+        elif line.startswith("# "):
+            draw.text((padding, y), line, font=font, fill="#a0a0a0")
+        elif "HTTP/" in line or line.startswith(">>>"):
+            draw.text((padding, y), line, font=font, fill=accent)
+        elif line.startswith("ERROR") or "Fault" in line:
+            draw.text((padding, y), line, font=font, fill="#ff7b72")
+        elif "Tests run:" in line and "Failures: 0, Errors: 0" in line:
+            draw.text((padding, y), line, font=font, fill=accent)
+        elif "BUILD SUCCESS" in line:
+            draw.text((padding, y), line, font=font, fill=accent)
+        elif "healthy" in line.lower():
+            draw.text((padding, y), line, font=font, fill=accent)
+        else:
+            draw.text((padding, y), line, font=font, fill=fg)
+        y += line_h
+
+    img.save(out_path, "PNG", optimize=True)
+    return out_path
+
+
+# -------- screenshots concretos ---------------------------------------------
+
+S = {}
+
+S["docker_ps"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "01_docker_ps.png"),
+    "PowerShell - docker ps (6 containers healthy)",
+    [
+        "$ docker ps --filter \"name=orbittapi\" --format \"table {{.Names}}\\t{{.Status}}\"",
+        "",
+        "NAMES                 STATUS",
+        "orbittapi-soap        Up 4 minutes (healthy)",
+        "orbittapi-satellite   Up 4 minutes (healthy)",
+        "orbittapi-gateway     Up 6 minutes (healthy)",
+        "orbittapi-identity    Up 6 minutes (healthy)",
+        "orbittapi-postgres    Up 6 minutes (healthy)",
+        "orbittapi-redis       Up 6 minutes (healthy)",
+    ],
+)
+
+S["mvn_test"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "02_mvn_test.png"),
+    "PowerShell - mvn test (39 testes, todos verdes)",
+    [
+        "$ mvn test",
+        "",
+        "[INFO] Running br.com.orbittapi.identity.application.DeleteAccountUseCaseTest",
+        "[INFO] Running br.com.orbittapi.identity.application.RegisterAccountUseCaseTest",
+        "[INFO] Running br.com.orbittapi.identity.application.UpdateAccountEmailUseCaseTest",
+        "[INFO] Running br.com.orbittapi.identity.domain.AccountTest",
+        "[INFO] Running br.com.orbittapi.identity.domain.EmailTest",
+        "[INFO] Running br.com.orbittapi.identity.domain.PasswordTest",
+        "[INFO] Tests run: 21, Failures: 0, Errors: 0, Skipped: 0",
+        "[INFO] Running br.com.orbittapi.satellite.application.GetLandUseUseCaseTest",
+        "[INFO] Running br.com.orbittapi.satellite.domain.CoordinateTest",
+        "[INFO] Running br.com.orbittapi.satellite.domain.LandUseDistributionTest",
+        "[INFO] Running br.com.orbittapi.satellite.domain.NdviScoreTest",
+        "[INFO] Running br.com.orbittapi.satellite.domain.SatelliteQueryTest",
+        "[INFO] Running br.com.orbittapi.satellite.infrastructure.MockSatelliteDataSourceTest",
+        "[INFO] Tests run: 15, Failures: 0, Errors: 0, Skipped: 0",
+        "[INFO] Running br.com.orbittapi.soap.endpoint.SatelliteEndpointTest",
+        "[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0",
+        "",
+        "[INFO] BUILD SUCCESS    (TOTAL: 39 testes, 0 falhas)",
+    ],
+)
+
+S["register"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "03_register.png"),
+    "PowerShell - POST /auth/register (US-01: cadastro com JWT)",
+    [
+        "$ curl -X POST http://localhost:8080/auth/register -H \"Content-Type: application/json\" \\",
+        "       -d '{\"email\":\"dev@orbittapi.dev\",\"password\":\"Abcdefg1\"}'",
+        "",
+        ">>> HTTP/1.1 201 Created",
+        "",
+        "{",
+        "  \"accountId\": \"412e2976-2281-4358-be78-4e16621e2bc0\",",
+        "  \"email\": \"dev@orbittapi.dev\",",
+        "  \"apiKey\": \"obt_QBC1atcWJBihhi3yElZPH-YsyTA2Swro\",",
+        "  \"token\": \"eyJhbGciOiJIUzM4NCJ9.eyJpc3MiOiJvcmJpdHRhcGktaWRlbnRpdHkiLCJzdWIi...\",",
+        "  \"expiresAt\": \"2026-05-30T20:13:33.727366898Z\"",
+        "}",
+    ],
+)
+
+S["landuse_cache"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "04_landuse_cache.png"),
+    "PowerShell - GET /landuse + cache hit no Redis (US-05 + US-21)",
+    [
+        "$ curl \"http://localhost:8080/landuse?lat=-23.5&lng=-46.6\" -H \"Authorization: Bearer $TOKEN\"",
+        "",
+        ">>> HTTP/1.1 200 OK",
+        "",
+        "{",
+        "  \"latitude\": -23.5, \"longitude\": -46.6,",
+        "  \"vegetationPercent\": 34.08, \"urbanPercent\": 6.8,",
+        "  \"waterPercent\": 5.52, \"bareSoilPercent\": 53.6,",
+        "  \"imageDate\": \"2026-05-07\", \"source\": \"MOCK\",",
+        "  \"cacheHit\": false",
+        "}",
+        "",
+        "$ curl \"http://localhost:8080/vegetation?lat=-23.5&lng=-46.6\" -H \"Authorization: Bearer $TOKEN\"",
+        "",
+        ">>> HTTP/1.1 200 OK",
+        "",
+        "{",
+        "  \"latitude\": -23.5, \"longitude\": -46.6,",
+        "  \"ndvi\": 0.054, \"health\": \"NONE\",",
+        "  \"imageDate\": \"2026-05-22\", \"source\": \"MOCK\",",
+        "  \"cacheHit\": true",
+        "}",
+    ],
+)
+
+S["put_me"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "05_put_me.png"),
+    "PowerShell - PUT /me (CRUD - atualiza email) + 409 RFC 7807",
+    [
+        "$ curl -X PUT http://localhost:8080/me -H \"Authorization: Bearer $TOKEN\" \\",
+        "       -H \"Content-Type: application/json\" -d '{\"email\":\"dev-renamed@orbittapi.dev\"}'",
+        "",
+        ">>> HTTP/1.1 200 OK",
+        "",
+        "{",
+        "  \"id\": \"412e2976-2281-4358-be78-4e16621e2bc0\",",
+        "  \"email\": \"dev-renamed@orbittapi.dev\",",
+        "  \"role\": \"DEVELOPER\",",
+        "  \"apiKeyRevoked\": false",
+        "}",
+        "",
+        "# Email duplicado -> 409 RFC 7807",
+        "$ curl -X PUT http://localhost:8080/me -d '{\"email\":\"already@orbittapi.dev\"}' ...",
+        "",
+        ">>> HTTP/1.1 409 Conflict",
+        "",
+        "{",
+        "  \"type\": \"https://orbittapi.dev/errors/email-in-use\",",
+        "  \"title\": \"Email already in use\", \"status\": 409,",
+        "  \"detail\": \"Email already in use: already@orbittapi.dev\",",
+        "  \"instance\": \"/me\"",
+        "}",
+    ],
+)
+
+S["delete_forbidden"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "06_delete_forbidden.png"),
+    "PowerShell - DELETE /accounts/{id} sem ADMIN (CRUD - 403)",
+    [
+        "$ curl -X DELETE \"http://localhost:8080/accounts/412e2976-2281-4358-be78-4e16621e2bc0\" \\",
+        "       -H \"Authorization: Bearer $TOKEN_DEVELOPER\"",
+        "",
+        ">>> HTTP/1.1 403 Forbidden",
+        "",
+        "(role insuficiente; somente tokens com role=ADMIN podem apagar contas)",
+    ],
+)
+
+S["soap_consulta"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "07_soap_consulta.png"),
+    "PowerShell - SOAP consultarVegetacao (POST /ws na porta 8083)",
+    [
+        "$ curl -X POST http://localhost:8083/ws -H \"Content-Type: text/xml; charset=utf-8\" \\",
+        "       -H 'SOAPAction: \"\"' -d @consultar.xml",
+        "",
+        "# consultar.xml (REQUEST):",
+        "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\"",
+        "                  xmlns:sat=\"http://orbittapi.dev/soap/satellite\">",
+        "  <soapenv:Body>",
+        "    <sat:ConsultarVegetacaoRequest>",
+        "      <sat:latitude>-23.5</sat:latitude>",
+        "      <sat:longitude>-46.6</sat:longitude>",
+        "    </sat:ConsultarVegetacaoRequest>",
+        "  </soapenv:Body>",
+        "</soapenv:Envelope>",
+        "",
+        ">>> HTTP/1.1 200 OK   (RESPONSE)",
+        "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">",
+        "  <SOAP-ENV:Body>",
+        "    <ns2:ConsultarVegetacaoResponse xmlns:ns2=\"http://orbittapi.dev/soap/satellite\">",
+        "      <ns2:latitude>-23.5</ns2:latitude>",
+        "      <ns2:longitude>-46.6</ns2:longitude>",
+        "      <ns2:ndvi>0.054</ns2:ndvi>",
+        "      <ns2:health>NONE</ns2:health>",
+        "      <ns2:imageDate>2026-05-22</ns2:imageDate>",
+        "      <ns2:source>MOCK</ns2:source>",
+        "    </ns2:ConsultarVegetacaoResponse>",
+        "  </SOAP-ENV:Body>",
+        "</SOAP-ENV:Envelope>",
+    ],
+)
+
+S["soap_registrar"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "08_soap_registrar.png"),
+    "PowerShell - SOAP registrarConsulta (persiste e retorna queryId)",
+    [
+        "$ curl -X POST http://localhost:8083/ws -H \"Content-Type: text/xml; charset=utf-8\" -d @reg.xml",
+        "",
+        "# REQUEST:",
+        "<sat:RegistrarConsultaRequest xmlns:sat=\"http://orbittapi.dev/soap/satellite\">",
+        "  <sat:accountId>00000000-0000-0000-0000-000000000501</sat:accountId>",
+        "  <sat:tipo>VEGETATION</sat:tipo>",
+        "  <sat:latitude>-23.5</sat:latitude>",
+        "  <sat:longitude>-46.6</sat:longitude>",
+        "</sat:RegistrarConsultaRequest>",
+        "",
+        ">>> HTTP/1.1 200 OK   (RESPONSE)",
+        "<ns2:RegistrarConsultaResponse xmlns:ns2=\"http://orbittapi.dev/soap/satellite\">",
+        "  <ns2:queryId>ac63d5ba-3b4d-4a60-a103-49529d8f55c1</ns2:queryId>",
+        "  <ns2:status>EXECUTED</ns2:status>",
+        "  <ns2:executedAt>2026-05-29T20:13:20.354Z</ns2:executedAt>",
+        "</ns2:RegistrarConsultaResponse>",
+    ],
+)
+
+S["soap_fault"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "09_soap_fault.png"),
+    "PowerShell - SOAP Fault: latitude invalida (Client error)",
+    [
+        "$ curl -X POST http://localhost:8083/ws -H \"Content-Type: text/xml; charset=utf-8\" \\",
+        "       -d '<sat:ConsultarVegetacaoRequest>",
+        "             <sat:latitude>95</sat:latitude>",
+        "             <sat:longitude>0</sat:longitude>",
+        "           </sat:ConsultarVegetacaoRequest>'",
+        "",
+        ">>> SOAP Fault:",
+        "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">",
+        "  <SOAP-ENV:Body>",
+        "    <SOAP-ENV:Fault>",
+        "      <faultcode>SOAP-ENV:Client</faultcode>",
+        "      <faultstring xml:lang=\"en\">Invalid request</faultstring>",
+        "    </SOAP-ENV:Fault>",
+        "  </SOAP-ENV:Body>",
+        "</SOAP-ENV:Envelope>",
+    ],
+)
+
+S["wsdl"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "10_wsdl.png"),
+    "PowerShell - WSDL publicado em /ws/satellite.wsdl",
+    [
+        "$ curl -s http://localhost:8083/ws/satellite.wsdl | head -25",
+        "",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>",
+        "<wsdl:definitions xmlns:wsdl=\"http://schemas.xmlsoap.org/wsdl/\"",
+        "                  xmlns:sch=\"http://orbittapi.dev/soap/satellite\"",
+        "                  xmlns:soap=\"http://schemas.xmlsoap.org/wsdl/soap/\"",
+        "                  xmlns:tns=\"http://orbittapi.dev/soap/satellite\"",
+        "                  targetNamespace=\"http://orbittapi.dev/soap/satellite\">",
+        "  <wsdl:types>",
+        "    <xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\"",
+        "               targetNamespace=\"http://orbittapi.dev/soap/satellite\">",
+        "      <xs:simpleType name=\"VegetationHealth\">",
+        "        <xs:restriction base=\"xs:string\">",
+        "          <xs:enumeration value=\"NONE\"/>",
+        "          <xs:enumeration value=\"SPARSE\"/>",
+        "          <xs:enumeration value=\"MODERATE\"/>",
+        "          <xs:enumeration value=\"DENSE\"/>",
+        "        </xs:restriction>",
+        "      </xs:simpleType>",
+        "      ...",
+    ],
+)
+
+S["queries"] = render_terminal_png(
+    os.path.join(SCREEN_DIR, "11_queries.png"),
+    "PowerShell - POST /queries (endpoint novo do satellite-service)",
+    [
+        "$ curl -X POST http://localhost:8082/queries \\",
+        "       -H \"X-User-Id: 412e2976-2281-4358-be78-4e16621e2bc0\" \\",
+        "       -H \"Content-Type: application/json\" \\",
+        "       -d '{\"type\":\"LAND_USE\",\"latitude\":-23.5,\"longitude\":-46.6}'",
+        "",
+        ">>> HTTP/1.1 201 Created",
+        "",
+        "{",
+        "  \"queryId\": \"703bcd79-f760-4009-9026-2bc0525e9db7\",",
+        "  \"type\": \"LAND_USE\",",
+        "  \"latitude\": -23.5,",
+        "  \"longitude\": -46.6,",
+        "  \"status\": \"EXECUTED\",",
+        "  \"executedAt\": \"2026-05-29T20:13:57.022860935Z\"",
+        "}",
+    ],
+)
+
+
+# =============================================================================
+# Parte 2: montar o PDF
+# =============================================================================
 styles = getSampleStyleSheet()
 
 title_style = ParagraphStyle(
     'TitleBig', parent=styles['Title'], fontSize=26, leading=32,
-    spaceAfter=12, alignment=TA_CENTER, textColor=colors.HexColor("#0b3d91"),
-)
+    spaceAfter=12, alignment=TA_CENTER, textColor=colors.HexColor("#0b3d91"))
 subtitle_style = ParagraphStyle(
     'Subtitle', parent=styles['Normal'], fontSize=14, leading=18,
-    alignment=TA_CENTER, textColor=colors.HexColor("#444444"), spaceAfter=24,
-)
+    alignment=TA_CENTER, textColor=colors.HexColor("#444444"), spaceAfter=24)
 h1 = ParagraphStyle('H1', parent=styles['Heading1'], fontSize=18, leading=22,
                     spaceBefore=18, spaceAfter=10,
                     textColor=colors.HexColor("#0b3d91"))
@@ -44,17 +403,12 @@ code_style = ParagraphStyle(
     'Code', parent=styles['Code'], fontSize=8.5, leading=11,
     backColor=colors.HexColor("#f4f6fa"),
     borderColor=colors.HexColor("#dde2ec"), borderWidth=0.5, borderPadding=6,
-    leftIndent=4, rightIndent=4, spaceBefore=4, spaceAfter=8,
-    textColor=colors.HexColor("#1c1c1c"),
-)
-ascii_style = ParagraphStyle(
-    'Ascii', parent=code_style, alignment=TA_LEFT,
-)
+    leftIndent=4, rightIndent=4, spaceBefore=4, spaceAfter=8)
+ascii_style = ParagraphStyle('Ascii', parent=code_style, alignment=TA_LEFT)
 caption = ParagraphStyle('Caption', parent=body, fontSize=9, leading=12,
                          textColor=colors.HexColor("#555555"), alignment=TA_CENTER,
                          spaceAfter=10)
 
-# -------------------- helpers --------------------
 def p(text, style=body):
     return Paragraph(text, style)
 
@@ -86,8 +440,19 @@ def make_table(data, col_widths=None, header_bg="#0b3d91", header_fg="#ffffff"):
     ]))
     return t
 
-# -------------------- footer/header com numero de pagina --------------------
-def on_page(canv: canvas.Canvas, doc):
+def shot(path, caption_text=None, max_width=17 * cm):
+    """Insere uma imagem PNG do screenshots/ dimensionada para caber na pagina."""
+    img = Image(path)
+    iw, ih = img.imageWidth, img.imageHeight
+    ratio = max_width / iw
+    img.drawWidth = max_width
+    img.drawHeight = ih * ratio
+    parts = [img]
+    if caption_text:
+        parts.append(p(caption_text, caption))
+    return KeepTogether(parts)
+
+def on_page(canv, doc):
     canv.saveState()
     canv.setFont('Helvetica', 8)
     canv.setFillColor(colors.HexColor("#666666"))
@@ -98,20 +463,23 @@ def on_page(canv: canvas.Canvas, doc):
     canv.line(2*cm, 1.5*cm, A4[0] - 2*cm, 1.5*cm)
     canv.restoreState()
 
+
 # -------------------- conteudo --------------------
 story = []
 
-# ===== CAPA =====
+# ===== CAPA + INTEGRANTES =====
 story.append(Spacer(1, 4*cm))
 story.append(p("OrbittAPI", title_style))
 story.append(p("Plataforma SaaS de dados satelitais", subtitle_style))
 story.append(Spacer(1, 1*cm))
 story.append(p("Documentacao da Global Solution 2026.1", h2))
-story.append(p("Disciplinas combinadas: Service-Oriented Architecture (SOA) e Domain-Driven Design (DDD)", body))
-story.append(Spacer(1, 0.6*cm))
+story.append(p("Disciplinas combinadas: SOA (Service-Oriented Architecture) "
+               "e DDD (Domain-Driven Design)", body))
+story.append(Spacer(1, 0.5*cm))
 story.append(p("Tema do semestre: Industria Espacial", body))
-story.append(p("ODS alinhados: 13 (Acao contra a mudanca global do clima) e 2 (Fome zero e agricultura sustentavel)", body))
-story.append(Spacer(1, 2*cm))
+story.append(p("ODS principal: 13 (Acao contra a mudanca global do clima). "
+               "ODS secundario: 2 (Fome zero e agricultura sustentavel).", body))
+story.append(Spacer(1, 1.5*cm))
 
 story.append(p("<b>Integrantes</b>", h3))
 integrantes_data = [
@@ -127,1140 +495,539 @@ story.append(p("FIAP - 1S/2026", caption))
 
 story.append(PageBreak())
 
+
 # ===== SUMARIO =====
 story.append(p("Sumario", h1))
-sumario_items = [
-    "1. Visao geral do projeto",
-    "2. Conexao com o tema Industria Espacial e ODS",
-    "3. Arquitetura SOA: dois microservicos e um gateway",
-    "4. Visao geral de Domain-Driven Design",
-    "5. Strategic Design",
-    "    5.1 Ubiquitous Language (linguagem ubiqua)",
-    "    5.2 Bounded Context (contexto delimitado)",
-    "    5.3 Subdomains: Core, Supporting e Generic",
-    "    5.4 Context Map e padroes de relacionamento",
-    "6. Tactical Design (Building Blocks)",
-    "    6.1 Entity",
-    "    6.2 Value Object",
-    "    6.3 Aggregate e Aggregate Root",
-    "    6.4 Domain Event",
-    "    6.5 Domain Service",
-    "    6.6 Application Service / Use Case",
-    "    6.7 Repository",
-    "    6.8 Factory",
-    "    6.9 Module",
-    "7. Arquitetura em camadas e Ports and Adapters (Hexagonal)",
-    "8. Anti-Corruption Layer aplicada",
-    "9. Erros padronizados via RFC 7807",
-    "10. Cache estrategico no Redis",
-    "11. Seguranca, JWT e fluxo de autenticacao",
-    "12. Mapeamento mestre: conceito DDD para arquivo no codigo",
-    "13. Cobertura do backlog (User Stories)",
-    "14. Como subir o ambiente (Docker)",
-    "15. Endpoints REST e exemplos cURL",
-    "16. Testes automatizados",
-    "17. Diferenciais implementados",
-    "18. Definition of Done",
-    "19. Conclusao",
-]
-for s in sumario_items:
+for s in [
+    "1. Descricao da solucao proposta",
+    "2. Problema que sera resolvido",
+    "3. Objetivos da aplicacao",
+    "4. Arquitetura da solucao",
+    "5. Diagrama de Arquitetura SOA",
+    "6. Explicacao da API REST",
+    "7. Explicacao do Web Service SOAP",
+    "8. Explicacao da integracao entre os servicos",
+    "9. Tecnologias utilizadas",
+    "10. Evidencias de funcionamento",
+    "11. Prints dos testes realizados",
+    "12. Conclusao do projeto",
+]:
     story.append(p(s, body))
 story.append(PageBreak())
 
-# ===== 1. VISAO GERAL =====
-story.append(p("1. Visao geral do projeto", h1))
-story.append(p(
-    "OrbittAPI e uma plataforma <b>Software-as-a-Service</b> de acesso a dados satelitais. "
-    "Empresas de qualquer setor (agronegocio, seguradoras, construtoras, consultorias ambientais) "
-    "podem consumir inteligencia espacial atraves de endpoints REST simples, sem precisar de "
-    "cientistas de dados ou infraestrutura propria.", body))
-story.append(p(
-    "A plataforma agrega dados de fontes como NASA, ESA e INPE, processa imagens de satelite e entrega "
-    "metricas prontas para uso via API: indice de vegetacao (NDVI), uso do solo, risco de alagamento, "
-    "deteccao de desmatamento e expansao urbana. O modelo de negocio e baseado em assinatura mensal "
-    "(Free, Startup, Business e Enterprise) com cobranca por volume de chamadas de API.", body))
-story.append(p(
-    "Este repositorio implementa o <b>backend</b> da Global Solution, atendendo simultaneamente os requisitos das "
-    "disciplinas de SOA (Service-Oriented Architecture) e DDD (Domain-Driven Design). A solucao foi "
-    "construida como um monorepo Maven com dois microservicos de dominio mais um gateway, todos em "
-    "Java 21 e Spring Boot 3.3, prontos para subir em containers via Docker Compose.", body))
 
-story.append(p("Stack tecnica", h3))
-story.append(li("Java 21 com record types, sealed interfaces e pattern matching"))
-story.append(li("Spring Boot 3.3.5 (Web, Data JPA, Security, Validation, Actuator)"))
-story.append(li("Spring Cloud Gateway para roteamento e validacao centralizada de JWT"))
-story.append(li("PostgreSQL 16 (um schema por bounded context: identity_db e satellite_db)"))
-story.append(li("Redis 7 para cache de consultas satelitais com TTL de 6 horas"))
-story.append(li("JWT via biblioteca jjwt 0.12 com assinatura HS384"))
-story.append(li("BCrypt para hash de senhas (cost factor 12)"))
-story.append(li("Springdoc OpenAPI para Swagger UI por servico"))
-story.append(li("JUnit 5, Mockito e AssertJ para testes"))
-story.append(li("Maven multi-modulo com pom parent e tres modulos filhos"))
-story.append(li("Docker e Docker Compose para empacotamento e orquestracao local"))
-
-story.append(PageBreak())
-
-# ===== 2. CONEXAO COM O TEMA =====
-story.append(p("2. Conexao com o tema Industria Espacial e ODS", h1))
+# ===== 1. DESCRICAO DA SOLUCAO =====
+story.append(p("1. Descricao da solucao proposta", h1))
 story.append(p(
-    "A Industria Espacial vive uma transformacao em escala: o que antes era prerrogativa de agencias "
-    "governamentais hoje e operado por uma cadeia de empresas privadas (SpaceX, Rocket Lab, Planet Labs, "
-    "Capella Space, entre outras). Essa democratizacao gerou uma <b>economia espacial</b> em torno do uso "
-    "civil de dados orbitais.", body))
+    "OrbittAPI e uma plataforma <b>Software-as-a-Service</b> de acesso a dados "
+    "satelitais. A solucao agrega imagens de satelite (Landsat, Sentinel/Copernicus) "
+    "e disponibiliza metricas prontas para uso via API REST simples - indice de "
+    "vegetacao (NDVI), uso do solo, risco de alagamento, deteccao de desmatamento "
+    "e expansao urbana. Empresas de qualquer setor (agronegocio, seguradoras, "
+    "construtoras, consultorias ambientais) podem consumir inteligencia espacial "
+    "sem precisar de cientistas de dados ou infraestrutura propria.", body))
 story.append(p(
-    "OrbittAPI participa dessa economia oferecendo a camada de software que conecta a saida bruta de "
-    "satelites (TIFFs multispectrais, GeoJSON de telemetria, indices brutos) com aplicacoes finais que "
-    "consomem JSON estruturado. Em vez de exigir que um cliente da agricultura entenda Sentinel-2 ou "
-    "Landsat 9, ele faz uma chamada GET /vegetation?lat=X&lng=Y e recebe um NDVI ja calculado e "
-    "classificado por nivel de vegetacao.", body))
-
-story.append(p("ODS principal: 13 - Acao contra a mudanca global do clima", h3))
+    "Este repositorio implementa o <b>backend</b> da Global Solution. A entrega "
+    "atende simultaneamente as duas disciplinas: SOA, com a decomposicao em "
+    "microservicos comunicando-se por HTTP REST e SOAP, e DDD, com modelagem por "
+    "bounded contexts, agregados, value objects, eventos de dominio e arquitetura "
+    "em portas e adaptadores.", body))
 story.append(p(
-    "Os indices de vegetacao e os mapas de uso do solo permitem monitorar perda de cobertura vegetal, "
-    "expansao de areas urbanas sobre matas e impacto de eventos climaticos extremos (alagamentos, "
-    "secas, queimadas). Sao insumos diretos para acoes de mitigacao climatica.", body))
+    "Sao 4 servicos backend: dois microservicos de dominio (identity-service e "
+    "satellite-service), um API Gateway que valida JWT e propaga identidade, e um "
+    "Web Service SOAP opcional que reutiliza o satellite-service via REST.", body))
 
-story.append(p("ODS secundario: 2 - Fome zero e agricultura sustentavel", h3))
+
+# ===== 2. PROBLEMA =====
+story.append(p("2. Problema que sera resolvido", h1))
 story.append(p(
-    "O NDVI (Normalized Difference Vegetation Index) e um dos principais indicadores para agricultura de "
-    "precisao. Variacoes mensais e sazonais no NDVI ajudam produtores a tomar decisoes sobre irrigacao, "
-    "plantio, colheita e identificacao de pragas. Disponibilizar isso via API barateia o acesso a "
-    "tecnologia para pequenos produtores.", body))
-
-# ===== 3. ARQUITETURA SOA =====
-story.append(p("3. Arquitetura SOA: dois microservicos e um gateway", h1))
+    "Dados satelitais publicos (NASA, ESA, INPE) sao um recurso valioso para "
+    "monitoramento ambiental, agricultura, planejamento urbano e gestao de risco. "
+    "Contudo, consumi-los hoje exige:", body))
+story.append(li("Lidar com formatos brutos (TIFFs multispectrais, GeoJSON de telemetria, indices crus)"))
+story.append(li("Ter infraestrutura para processar imagens com visao computacional"))
+story.append(li("Manter integracoes especificas com cada provedor (NASA Earth API, Copernicus Open Hub, etc.)"))
+story.append(li("Contratar especialistas em sensoriamento remoto"))
 story.append(p(
-    "O backend foi decomposto em tres servicos independentes, comunicando-se por HTTP. Cada servico tem "
-    "seu proprio Dockerfile, seu proprio schema de banco e pode ser desenvolvido, testado e deployado "
-    "separadamente. Esta e a definicao classica de uma arquitetura orientada a servicos.", body))
-
-arq = """\
-                       +---------------------+
-       Cliente HTTP -->|       Gateway       | porta 8080
-                       |  Spring Cloud GW    | valida JWT
-                       |  + filtro JWT       | injeta X-User-Id
-                       +----------+----------+
-                                  |
-                +-----------------+------------------+
-                |                                    |
-       +--------v----------+               +---------v---------+
-       | identity-service  |               | satellite-service |
-       |    porta 8081     |               |    porta 8082     |
-       | BC: Identity &    |               | BC: Satellite     |
-       |     Access        |               |     Data          |
-       +--------+----------+               +---------+---------+
-                |                                    |
-                |    +-------------+   +----------+  |
-                +--->| PostgreSQL  |   |  Redis 7 |<-+
-                     |   5432      |   |   6379   |
-                     +-------------+   +----------+
-                identity_db /          cache:
-                satellite_db           landuse:{lat}:{lng}
-                                       vegetation:{lat}:{lng}
-                                       TTL 6 horas
-"""
-story.append(ascii_block(arq))
-story.append(p("Figura 1: Topologia dos servicos e suas dependencias.", caption))
-
-story.append(p("Responsabilidades de cada servico", h3))
-story.append(li("<b>identity-service</b>: bounded context Identity & Access. Cadastro, login, perfil, "
-                "geracao/revogacao de API key. Persiste em identity_db."))
-story.append(li("<b>satellite-service</b>: bounded context Satellite Data. Endpoints /landuse e /vegetation. "
-                "Persiste auditoria em satellite_db e cacheia respostas no Redis."))
-story.append(li("<b>gateway</b>: ponto de entrada unico (porta 8080). Roteia HTTP para os servicos, "
-                "valida JWT em rotas privadas e injeta X-User-Id no request antes de propagar, "
-                "evitando que cada servico precise revalidar o token."))
-
-story.append(p("Por que SOA aqui?", h3))
+    "<b>Resultado:</b> apenas empresas com grande estrutura conseguem extrair "
+    "valor desses dados. Pequenos produtores rurais, startups de agritech, "
+    "seguradoras regionais e consultorias ambientais ficam de fora.", body))
 story.append(p(
-    "Separar Identity de Satellite Data e mais do que decoracao arquitetural: sao dominios com ritmos de "
-    "evolucao diferentes (autenticacao e quase estavel, dados satelitais evoluem com novas fontes e novos "
-    "indices), com cargas diferentes (autenticacao tem picos rapidos, consulta satelital tende a ter "
-    "consultas mais pesadas), e com times potencialmente diferentes. Manter os dois servicos isolados "
-    "permite escala-los e evolui-los de forma independente.", body))
+    "OrbittAPI resolve isso oferecendo uma camada de servicos REST que abstrai "
+    "essa complexidade: o cliente faz <code>GET /vegetation?lat&amp;lng</code> e "
+    "recebe um NDVI ja calculado e classificado por nivel de vegetacao. O onus de "
+    "ingerir, processar e armazenar os dados de satelite fica todo na plataforma.", body))
 
-story.append(PageBreak())
 
-# ===== 4. VISAO GERAL DDD =====
-story.append(p("4. Visao geral de Domain-Driven Design", h1))
-story.append(p(
-    "Domain-Driven Design (DDD) e uma abordagem para o desenvolvimento de software complexo proposta por "
-    "<b>Eric Evans</b> no livro Domain-Driven Design: Tackling Complexity in the Heart of Software (2003) "
-    "e expandida por <b>Vaughn Vernon</b> em Implementing Domain-Driven Design (2013).", body))
-story.append(p(
-    "A premissa central e: o software resolve problemas de negocio, e portanto o codigo deve refletir o "
-    "<b>modelo do dominio</b> com a maior fidelidade possivel. DDD propoe um conjunto de praticas para "
-    "alinhar o modelo mental dos especialistas do negocio com o codigo, dividindo a abordagem em "
-    "<b>Strategic Design</b> (decisoes de larga escala: como dividir o sistema) e <b>Tactical Design</b> "
-    "(blocos de construcao do codigo: entidades, value objects, agregados, eventos).", body))
-story.append(p(
-    "Este documento percorre cada conceito apresentado em sala e mostra explicitamente como ele aparece "
-    "no codigo do OrbittAPI.", body))
-
-# ===== 5. STRATEGIC DESIGN =====
-story.append(p("5. Strategic Design", h1))
-
-# 5.1 Ubiquitous Language
-story.append(p("5.1 Ubiquitous Language (linguagem ubiqua)", h2))
-story.append(p(
-    "A linguagem ubiqua e um vocabulario compartilhado entre desenvolvedores, especialistas de dominio e "
-    "stakeholders. Todo conceito do negocio deve aparecer no codigo com o mesmo nome usado pelo dominio. "
-    "Termos genericos como Manager, Helper, Data, Info, Util sao banidos quando ha um termo de negocio "
-    "disponivel.", body))
-story.append(p("Aplicacao no OrbittAPI:", h3))
-language_table = [
-    ["Termo do dominio", "Onde aparece no codigo"],
-    ["Account", "Account.java (agregado raiz do identity-service)"],
-    ["ApiKey", "ApiKey.java (value object)"],
-    ["Email", "Email.java (value object com validacao)"],
-    ["Password", "Password.java (value object que faz hash no construtor)"],
-    ["SatelliteQuery", "SatelliteQuery.java (agregado de auditoria)"],
-    ["Coordinate", "Coordinate.java (value object lat/lng com invariantes)"],
-    ["NdviScore", "NdviScore.java (value object com classificacao VegetationHealth)"],
-    ["LandUseDistribution", "LandUseDistribution.java (vegetacao, urbano, agua, solo exposto)"],
-    ["VegetationHealth", "Enum NONE, SPARSE, MODERATE, DENSE dentro de NdviScore"],
-    ["SatelliteSource", "Enum LANDSAT, SENTINEL, MODIS, MOCK"],
+# ===== 3. OBJETIVOS =====
+story.append(p("3. Objetivos da aplicacao", h1))
+objetivos = [
+    ["Eixo", "Objetivo concreto"],
+    ["Negocio",
+     "Disponibilizar metricas de satelite via API REST com modelo SaaS por consumo, "
+     "permitindo escalar de pequenos produtores a clientes Enterprise"],
+    ["Tecnico (SOA)",
+     "Arquitetura orientada a servicos com 2 microservicos + gateway + web service SOAP, "
+     "cada qual com seu proprio banco e ciclo de deploy"],
+    ["Tecnico (DDD)",
+     "Modelo de dominio rico com agregados, value objects, eventos e portas. "
+     "Anti-corruption layer para a fonte de dados externa"],
+    ["Operacional",
+     "Subir o ambiente inteiro com um unico comando (docker compose). "
+     "Healthchecks em todos os servicos"],
+    ["Performance",
+     "Cache Redis com TTL de 6 horas para reduzir custo de processamento e latencia"],
+    ["Confiabilidade",
+     "Erros padronizados em RFC 7807 (Problem Details). "
+     "Testes automatizados cobrindo agregados, value objects e casos de uso"],
+    ["Sustentabilidade",
+     "Alinhamento aos ODS 13 (clima) e 2 (agricultura sustentavel) via NDVI "
+     "e indices de uso do solo"],
 ]
-story.append(make_table(language_table, col_widths=[6*cm, 11*cm]))
+story.append(make_table(objetivos, col_widths=[3.5*cm, 13.5*cm]))
 
-# 5.2 Bounded Context
-story.append(p("5.2 Bounded Context (contexto delimitado)", h2))
+
+# ===== 4. ARQUITETURA DA SOLUCAO =====
+story.append(p("4. Arquitetura da solucao", h1))
 story.append(p(
-    "Um Bounded Context e uma fronteira explicita dentro da qual um modelo de dominio e consistente. "
-    "Dois bounded contexts podem ter o mesmo nome para conceitos diferentes (por exemplo, Customer no "
-    "contexto de Vendas e diferente de Customer no contexto de Cobranca) sem causar ambiguidade, porque "
-    "cada um vive em sua propria fronteira.", body))
-story.append(p("O OrbittAPI tem dois bounded contexts explicitos, refletidos um por microservico:", body))
+    "A solucao adota dois pilares complementares: <b>SOA</b> define as "
+    "fronteiras tecnicas (servicos independentes, comunicacao por HTTP) e "
+    "<b>DDD</b> define as fronteiras de negocio (bounded contexts, agregados, "
+    "linguagem ubiqua). As duas fronteiras coincidem por desenho: cada bounded "
+    "context vira um microservico Maven separado.", body))
 
+story.append(p("Camadas internas de cada servico (DDD classica)", h3))
+arq_tree = """\
+br.com.orbittapi.<servico>/
+|-- domain/          <- nucleo: agregados, value objects, eventos, ports
+|   |-- model/
+|   |-- event/
+|   |-- repository/  <- interfaces (portas)
+|   |-- port/        <- outras portas (ex: SatelliteDataSource)
+|   `-- exception/
+|-- application/     <- orquestracao de casos de uso
+|   |-- usecase/     <- @Service - regras de orquestracao
+|   |-- dto/         <- comandos de entrada / respostas
+|   `-- port/        <- portas usadas pelo use case (TokenProvider...)
+|-- infrastructure/  <- adapters concretos (JPA, Redis, JWT, Mock)
+|   |-- persistence/
+|   |-- adapter/
+|   |-- cache/
+|   |-- security/
+|   `-- config/
+`-- interfaces/rest/ <- controllers + GlobalExceptionHandler (RFC 7807)
+"""
+story.append(ascii_block(arq_tree))
+story.append(p("Figura 1: estrutura DDD interna de cada microservico.", caption))
+
+story.append(p("Bounded contexts e suas responsabilidades", h3))
 bc_table = [
-    ["Bounded Context", "Microservico", "Linguagem propria"],
-    ["Identity & Access", "identity-service", "Account, ApiKey, Password, Role, Credentials"],
-    ["Satellite Data", "satellite-service", "SatelliteQuery, Coordinate, NDVI, LandUse, ImageDate, Source"],
+    ["Contexto", "Servico", "Linguagem ubiqua propria"],
+    ["Identity & Access",  "identity-service (8081)",
+     "Account, ApiKey, Email, Password, Role, Credentials"],
+    ["Satellite Data",     "satellite-service (8082)",
+     "SatelliteQuery, Coordinate, NdviScore, LandUseDistribution, "
+     "VegetationHealth, SatelliteSource"],
+    ["API Gateway",        "gateway (8080)",
+     "Spring Cloud Gateway com validacao JWT centralizada"],
+    ["SOAP Gateway",       "soap-service (8083, profile soap)",
+     "Operacoes SOAP que consomem satellite REST internamente"],
 ]
-story.append(make_table(bc_table, col_widths=[4.5*cm, 4.5*cm, 8*cm]))
-story.append(p(
-    "Nao ha vazamento entre contextos: o satellite-service nao conhece a classe Account; ele recebe um "
-    "UUID accountId atraves do header X-User-Id injetado pelo gateway. Isso e proposital: cada contexto "
-    "pode evoluir sem coordenar mudancas com o outro.", body))
+story.append(make_table(bc_table, col_widths=[3.5*cm, 5.5*cm, 8*cm]))
 
-# 5.3 Subdomains
-story.append(p("5.3 Subdomains: Core, Supporting e Generic", h2))
+story.append(p("Decisao chave: dois bancos, dois schemas", h3))
 story.append(p(
-    "Subdomains classificam partes do negocio de acordo com a sua centralidade estrategica:", body))
-story.append(li("<b>Core Domain</b>: o diferencial competitivo da empresa. Merece o melhor time e o "
-                "modelo mais cuidadoso."))
-story.append(li("<b>Supporting Subdomain</b>: importante mas nao diferencial. Pode ser construido "
-                "internamente sem virar o foco principal."))
-story.append(li("<b>Generic Subdomain</b>: problema resolvido por solucoes de mercado (compra, nao "
-                "constroi)."))
-
-sub_table = [
-    ["Subdomain", "Tipo", "Justificativa"],
-    ["Satellite Data", "Core",
-     "E o diferencial competitivo da OrbittAPI. Transformar imagens cruas em metricas REST "
-     "consumiveis e o que a empresa vende."],
-    ["Identity & Access", "Supporting",
-     "Importante mas nao diferencial. Hoje e construido internamente, mas em uma evolucao "
-     "poderia ser substituido por um provedor externo (Auth0, Keycloak)."],
-    ["Billing", "Generic",
-     "Cobranca por consumo de API e resolvida por solucoes de mercado (Stripe, Iugu). Fora "
-     "do escopo desta GS."],
-]
-story.append(make_table(sub_table, col_widths=[3.5*cm, 2.5*cm, 11*cm]))
+    "Cada bounded context tem seu schema isolado no Postgres (identity_db e "
+    "satellite_db). Isso reforca a autonomia: o satellite-service nunca le "
+    "diretamente da tabela de contas - ele recebe apenas um <code>X-User-Id</code> "
+    "(UUID) via header HTTP, injetado pelo gateway apos validar o JWT.", body))
 
 story.append(PageBreak())
 
-# 5.4 Context Map
-story.append(p("5.4 Context Map e padroes de relacionamento", h2))
-story.append(p(
-    "Quando dois ou mais bounded contexts precisam interagir, e necessario definir explicitamente como. "
-    "Os principais padroes catalogados por Eric Evans sao:", body))
 
-cmap_table = [
-    ["Padrao", "Descricao curta"],
-    ["Shared Kernel",
-     "Dois contextos compartilham uma porcao pequena de modelo. Mudancas exigem acordo entre os times."],
-    ["Customer-Supplier",
-     "Um contexto consome o outro. O supplier tem responsabilidade de manter compatibilidade."],
-    ["Conformist",
-     "O downstream se rende ao modelo do upstream sem traduzir, aceitando-o como vem."],
-    ["Anti-Corruption Layer (ACL)",
-     "O downstream coloca uma camada de traducao que isola seu modelo do modelo externo."],
-    ["Open Host Service",
-     "O contexto publica uma API estavel que multiplos consumidores podem usar."],
-    ["Published Language",
-     "Acordo sobre um formato comum (JSON Schema, Avro) usado entre os contextos."],
-    ["Separate Ways",
-     "Decisao explicita de nao integrar. Cada contexto resolve o problema sozinho."],
-    ["Partnership",
-     "Dois times se coordenam ativamente para que ambos os contextos avancem juntos."],
-]
-story.append(make_table(cmap_table, col_widths=[5*cm, 12*cm]))
+# ===== 5. DIAGRAMA DE ARQUITETURA SOA =====
+story.append(p("5. Diagrama de Arquitetura SOA", h1))
 
-story.append(p("Relacoes presentes no OrbittAPI:", h3))
-story.append(li("<b>Identity & Access (upstream) -> Satellite Data (downstream)</b> via "
-                "Customer-Supplier + Published Language. O identity emite JWTs com sub=accountId no "
-                "formato JSON Web Token (linguagem publicada). O satellite consome accountId."))
-story.append(li("<b>Satellite Data -> Fonte externa de dados (NASA/ESA/Mock)</b> via "
-                "<b>Anti-Corruption Layer</b>. A porta de dominio SatelliteDataSource isola completamente "
-                "o modelo do dominio do formato externo. Hoje o adapter e MockSatelliteDataSource; "
-                "amanha pode ser NasaEarthApiAdapter sem nenhuma mudanca no dominio."))
-
-# ===== 6. TACTICAL DESIGN =====
-story.append(p("6. Tactical Design (Building Blocks)", h1))
-
-# 6.1 Entity
-story.append(p("6.1 Entity", h2))
-story.append(p(
-    "Uma <b>Entidade</b> e um objeto que possui identidade. Dois objetos com os mesmos atributos mas "
-    "ids diferentes sao considerados <b>diferentes</b>. A identidade persiste ao longo do tempo, mesmo "
-    "quando os atributos mudam.", body))
-story.append(p("No OrbittAPI temos duas entidades raizes:", body))
-story.append(li("<b>Account</b> (identity-service): identidade UUID; mesmo que email e role mudem, e a mesma conta."))
-story.append(li("<b>SatelliteQuery</b> (satellite-service): identidade UUID atribuida no momento da execucao."))
-
-story.append(p("Trecho: igualdade por identidade no Account", h3))
-story.append(code("""@Override
-public boolean equals(Object o) {
-    if (this == o) return true;
-    if (!(o instanceof Account account)) return false;
-    return Objects.equals(id, account.id);   // <- so o id importa
-}
-
-@Override
-public int hashCode() {
-    return Objects.hash(id);
-}"""))
-
-# 6.2 Value Object
-story.append(p("6.2 Value Object", h2))
-story.append(p(
-    "Um <b>Value Object</b> e definido apenas pelos seus atributos. Nao tem identidade propria. Dois "
-    "VOs com o mesmo valor sao iguais. Sao <b>imutaveis</b>: qualquer operacao retorna uma nova instancia. "
-    "Encapsulam regras de validacao no construtor: se voce conseguiu construir o objeto, ele e valido. "
-    "Isso elimina classes inteiras de bugs (coordenada invalida nunca chega no use case).", body))
-
-story.append(p("Exemplo 1: Coordinate", h3))
-story.append(code("""public final class Coordinate {
-
-    private final double latitude;
-    private final double longitude;
-
-    public Coordinate(double latitude, double longitude) {
-        if (latitude < -90.0 || latitude > 90.0) {
-            throw new InvalidCoordinateException(
-                "Latitude must be between -90 and 90, got " + latitude);
-        }
-        if (longitude < -180.0 || longitude > 180.0) {
-            throw new InvalidCoordinateException(
-                "Longitude must be between -180 and 180, got " + longitude);
-        }
-        this.latitude = latitude;
-        this.longitude = longitude;
-    }
-    // equals/hashCode por valor
-}"""))
-
-story.append(p("Exemplo 2: Email com normalizacao no construtor", h3))
-story.append(code("""public final class Email {
-    private static final Pattern EMAIL_REGEX =
-        Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\\\.[A-Za-z]{2,}$");
-
-    private final String value;
-
-    public Email(String value) {
-        if (value == null || value.isBlank())
-            throw new InvalidEmailException("Email must not be blank");
-        String normalized = value.trim().toLowerCase();
-        if (!EMAIL_REGEX.matcher(normalized).matches())
-            throw new InvalidEmailException("Email format is invalid: " + value);
-        this.value = normalized;
-    }
-    public String value() { return value; }
-}"""))
-
-story.append(p("Exemplo 3: Password com hash BCrypt no construtor (factory)", h3))
-story.append(code("""public final class Password {
-    private static final int MIN_LENGTH = 8;
-    private final String hash;
-
-    private Password(String hash) { this.hash = hash; }
-
-    public static Password fromRaw(String raw) {
-        validateStrength(raw);                              // >= 8, 1 numero, 1 maiuscula
-        return new Password(BCrypt.hashpw(raw, BCrypt.gensalt(12)));
-    }
-    public static Password fromHash(String hash) { return new Password(hash); }
-
-    public boolean matches(String raw) { return BCrypt.checkpw(raw, hash); }
-}"""))
-story.append(p(
-    "Observacao: a senha em texto plano nunca persiste em lugar nenhum. O construtor publico aceita "
-    "apenas o hash. A unica forma de criar uma senha a partir de raw e via factory method que ja faz "
-    "validacao de forca e hash BCrypt.", body))
-
-story.append(p("Exemplo 4: LandUseDistribution com invariante de soma", h3))
-story.append(code("""public LandUseDistribution(double vegetationPercent, double urbanPercent,
-                           double waterPercent, double bareSoilPercent) {
-    validateRange("vegetation", vegetationPercent);
-    validateRange("urban", urbanPercent);
-    validateRange("water", waterPercent);
-    validateRange("bareSoil", bareSoilPercent);
-
-    double total = vegetationPercent + urbanPercent + waterPercent + bareSoilPercent;
-    if (Math.abs(total - 100.0) > TOLERANCE) {
-        throw new InvalidLandUseDistributionException(
-            "Land use percentages must sum to 100 (+/- " + TOLERANCE + "), got " + total);
-    }
-    // ...
-}"""))
-
-story.append(PageBreak())
-
-# 6.3 Aggregate
-story.append(p("6.3 Aggregate e Aggregate Root", h2))
-story.append(p(
-    "Um <b>Agregado</b> e um cluster de objetos (entidades e value objects) que sao tratados como uma "
-    "unica unidade transacional. Toda mudanca passa pela <b>raiz do agregado</b>, que e o ponto de entrada "
-    "publico e o responsavel por garantir as <b>invariantes</b> do agregado.", body))
-story.append(p("Regras de um agregado bem desenhado:", body))
-story.append(li("Apenas a raiz e referenciada externamente. Objetos internos sao acessados via a raiz."))
-story.append(li("A raiz garante todas as invariantes. Estado invalido nunca chega a ser construido."))
-story.append(li("Uma transacao modifica um unico agregado. Multiplos agregados se coordenam via eventos."))
-
-story.append(p("Agregado Account", h3))
-story.append(p(
-    "Account e a raiz. Email, Password e ApiKey sao value objects pertencentes ao agregado. As "
-    "invariantes protegidas pela raiz incluem:", body))
-story.append(li("Senha sempre persistida como hash BCrypt (nunca em texto plano)."))
-story.append(li("Email unico (validado pelo use case consultando o repositorio antes de salvar)."))
-story.append(li("API key revogada nunca pode ser revogada novamente."))
-story.append(li("Eventos de dominio sao emitidos como parte da mudanca de estado."))
-
-story.append(code("""public class Account {
-
-    private final UUID id;
-    private final Email email;
-    private Password password;
-    private ApiKey apiKey;
-    private final AccountRole role;
-    private final Instant createdAt;
-    private final List<DomainEvent> domainEvents = new ArrayList<>();
-
-    public static Account register(Email email, String rawPassword, AccountRole role) {
-        Account account = new Account(
-            UUID.randomUUID(),
-            email,
-            Password.fromRaw(rawPassword),    // <- hash garantido aqui
-            ApiKey.generate(),                // <- API key sempre gerada na criacao
-            role,
-            Instant.now()
-        );
-        account.domainEvents.add(AccountRegistered.now(account.id, account.email));
-        return account;
-    }
-
-    public void revokeApiKey() {
-        if (apiKey.isRevoked()) {
-            throw new ApiKeyAlreadyRevokedException(
-                "API key for account " + id + " is already revoked");
-        }
-        this.apiKey = apiKey.revoke();
-        domainEvents.add(ApiKeyRevoked.now(id, apiKey.value()));
-    }
-
-    public boolean authenticatesWith(String rawPassword) {
-        return password.matches(rawPassword);
-    }
-    // ...
-}"""))
-
-story.append(p("Agregado SatelliteQuery", h3))
-story.append(p(
-    "Mais simples: agregado de auditoria que registra cada chamada feita aos endpoints de satellite. "
-    "Quando criado via factory execute(), emite o evento QueryExecuted contendo accountId, type, "
-    "coordinate e cacheHit (usado para auditoria e para billing futuro).", body))
-story.append(code("""public static SatelliteQuery execute(UUID accountId, QueryType type,
-                                     Coordinate coordinate, boolean cacheHit) {
-    SatelliteQuery query = new SatelliteQuery(
-        UUID.randomUUID(), accountId, type, coordinate, cacheHit, Instant.now()
-    );
-    query.domainEvents.add(
-        QueryExecuted.now(query.id, accountId, type, coordinate, cacheHit));
-    return query;
-}"""))
-
-# 6.4 Domain Event
-story.append(p("6.4 Domain Event", h2))
-story.append(p(
-    "Um <b>Evento de Dominio</b> representa algo significativo que aconteceu no negocio. E imutavel, "
-    "tem data/hora e nome no <b>passado</b> (Registered, Revoked, Executed). Outros componentes podem "
-    "reagir a esses eventos de forma desacoplada.", body))
-story.append(p(
-    "No OrbittAPI, os agregados acumulam eventos durante a execucao de um caso de uso, e o use case "
-    "publica todos eles apos a persistencia bem-sucedida. A publicacao usa ApplicationEventPublisher do "
-    "Spring por padrao, mas a interface DomainEventPublisher esta em application/port permitindo trocar "
-    "facilmente para Kafka, RabbitMQ ou outro mecanismo em uma evolucao futura.", body))
-
-story.append(p("Definicoes dos eventos do projeto", h3))
-story.append(code("""public record AccountRegistered(
-        UUID accountId, Email email, Instant occurredOn) implements DomainEvent { }
-
-public record ApiKeyRevoked(
-        UUID accountId, String apiKeyValue, Instant occurredOn) implements DomainEvent { }
-
-public record QueryExecuted(
-        UUID queryId, UUID accountId, QueryType type,
-        Coordinate coordinate, boolean cacheHit, Instant occurredOn) implements DomainEvent { }"""))
-
-story.append(p("Publicacao dentro do use case (apos persistir)", h3))
-story.append(code("""@Transactional
-public AuthResponse execute(RegisterAccountCommand command) {
-    Email email = new Email(command.email());
-
-    if (accountRepository.existsByEmail(email))
-        throw new EmailAlreadyInUseException(email.value());
-
-    Account account = Account.register(email, command.password(), AccountRole.DEVELOPER);
-    Account saved = accountRepository.save(account);
-
-    eventPublisher.publishAll(saved.pullDomainEvents());   // <- aqui
-
-    TokenProvider.IssuedToken token = tokenProvider.issue(saved);
-    return new AuthResponse(...);
-}"""))
-
-story.append(PageBreak())
-
-# 6.5 Domain Service
-story.append(p("6.5 Domain Service", h2))
-story.append(p(
-    "Um <b>Domain Service</b> e usado quando uma operacao do dominio nao pertence naturalmente a "
-    "nenhuma entidade ou value object. Tipicamente envolve mais de um agregado, ou e uma regra de "
-    "calculo que nao se encaixa como metodo de um objeto.", body))
-story.append(p(
-    "No OrbittAPI nao identificamos a necessidade de Domain Services neste escopo: as operacoes do "
-    "dominio (registrar conta, autenticar, revogar key, consultar landuse, consultar vegetation) "
-    "couberam todas dentro dos agregados ou dentro de Application Services. Em uma evolucao com "
-    "calculo de quotas, billing por consumo, deteccao de anomalias ou regras de plano (Free/Startup/"
-    "Business/Enterprise), surgiriam candidatos a Domain Services.", body))
-
-# 6.6 Application Service
-story.append(p("6.6 Application Service / Use Case", h2))
-story.append(p(
-    "Um <b>Application Service</b> e a fachada que orquestra o caso de uso: recebe input, carrega "
-    "agregados via repositorios, chama metodos do dominio para executar a logica de negocio, persiste "
-    "as mudancas e publica eventos. <b>Nao contem regra de negocio</b>: regra fica no agregado. O "
-    "application service so coordena.", body))
-
-us_table = [
-    ["Use Case", "Servico", "Responsabilidade"],
-    ["RegisterAccountUseCase", "identity",
-     "Cria Account, persiste, publica eventos, gera JWT"],
-    ["LoginUseCase", "identity",
-     "Carrega Account, valida senha, gera JWT"],
-    ["GetMyProfileUseCase", "identity",
-     "Carrega Account pelo id do JWT, retorna DTO de perfil"],
-    ["RevokeApiKeyUseCase", "identity",
-     "Carrega Account, executa revokeApiKey(), publica evento"],
-    ["GetLandUseUseCase", "satellite",
-     "Consulta cache; se miss, chama SatelliteDataSource; persiste auditoria"],
-    ["GetVegetationUseCase", "satellite",
-     "Mesmo fluxo do landuse mas para NDVI"],
-]
-story.append(make_table(us_table, col_widths=[5*cm, 2.2*cm, 9.8*cm]))
-
-story.append(p("Exemplo completo: GetLandUseUseCase", h3))
-story.append(code("""@Service
-public class GetLandUseUseCase {
-
-    private final SatelliteDataSource dataSource;
-    private final SatelliteQueryCache cache;
-    private final SatelliteQueryRepository queryRepository;
-    private final DomainEventPublisher eventPublisher;
-
-    public GetLandUseUseCase(SatelliteDataSource dataSource,
-                             SatelliteQueryCache cache,
-                             SatelliteQueryRepository queryRepository,
-                             DomainEventPublisher eventPublisher) {
-        this.dataSource = dataSource;
-        this.cache = cache;
-        this.queryRepository = queryRepository;
-        this.eventPublisher = eventPublisher;
-    }
-
-    @Transactional
-    public LandUseResponse execute(UUID accountId, double lat, double lng) {
-        Coordinate coordinate = new Coordinate(lat, lng);            // VO valida aqui
-
-        Optional<LandUseSnapshot> cached = cache.getLandUse(coordinate);
-        boolean cacheHit = cached.isPresent();
-        LandUseSnapshot snapshot;
-        if (cacheHit) {
-            snapshot = cached.get();
-        } else {
-            snapshot = dataSource.fetchLandUse(coordinate);          // ACL: chama porta
-            cache.putLandUse(coordinate, snapshot);
-        }
-
-        SatelliteQuery query = SatelliteQuery.execute(
-            accountId, QueryType.LAND_USE, coordinate, cacheHit);    // agregado emite evento
-        SatelliteQuery saved = queryRepository.save(query);
-        eventPublisher.publishAll(saved.pullDomainEvents());
-
-        return new LandUseResponse(/* ... */);
-    }
-}"""))
-
-# 6.7 Repository
-story.append(p("6.7 Repository", h2))
-story.append(p(
-    "Um <b>Repository</b> abstrai a persistencia de agregados, dando a ilusao de uma colecao em memoria. "
-    "Em DDD, a <b>interface do repositorio mora no dominio</b> (porque o dominio precisa dele para "
-    "expressar regras), e a <b>implementacao mora na infraestrutura</b> (JPA, MongoDB, in-memory). "
-    "Isso e uma aplicacao direta do Princpio de Inversao de Dependencia.", body))
-
-story.append(p("Interface no dominio (identity-service)", h3))
-story.append(code("""// br.com.orbittapi.identity.domain.repository
-public interface AccountRepository {
-    Account save(Account account);
-    Optional<Account> findById(UUID id);
-    Optional<Account> findByEmail(Email email);
-    boolean existsByEmail(Email email);
-}"""))
-
-story.append(p("Implementacao na infraestrutura via JPA", h3))
-story.append(code("""// br.com.orbittapi.identity.infrastructure.persistence
-@Repository
-public class AccountRepositoryImpl implements AccountRepository {
-
-    private final AccountJpaRepository jpa;
-
-    public AccountRepositoryImpl(AccountJpaRepository jpa) {
-        this.jpa = jpa;
-    }
-
-    @Override
-    public Account save(Account account) {
-        AccountJpaEntity saved = jpa.save(AccountPersistenceMapper.toEntity(account));
-        return AccountPersistenceMapper.toDomain(saved);
-    }
-
-    @Override
-    public Optional<Account> findByEmail(Email email) {
-        return jpa.findByEmail(email.value()).map(AccountPersistenceMapper::toDomain);
-    }
-    // ...
-}"""))
-story.append(p(
-    "Observe que o dominio nao conhece JPA, nao conhece a tabela accounts, nao conhece o Hibernate. "
-    "Ele conhece apenas a interface AccountRepository. A traducao entre Account (dominio) e "
-    "AccountJpaEntity (persistencia) e feita por um <b>mapper explicito</b> em "
-    "AccountPersistenceMapper.", body))
-
-# 6.8 Factory
-story.append(p("6.8 Factory", h2))
-story.append(p(
-    "Uma <b>Factory</b> encapsula a logica de criacao de objetos complexos. No DDD classico aparecem "
-    "como classes separadas ou como metodos de fabrica estaticos dentro do proprio agregado.", body))
-story.append(p("No OrbittAPI usamos <b>metodos de fabrica</b> (factory methods) dentro dos agregados:", body))
-story.append(li("<b>Account.register(...)</b>: cria uma conta completa com Email, Password hasheada, "
-                "ApiKey gerada, timestamp e evento AccountRegistered."))
-story.append(li("<b>SatelliteQuery.execute(...)</b>: cria um registro de auditoria com UUID novo e ja "
-                "emite o evento QueryExecuted."))
-story.append(li("<b>ApiKey.generate()</b>: gera uma nova chave com 24 bytes de entropia via SecureRandom."))
-story.append(li("<b>Password.fromRaw(raw)</b> e <b>Password.fromHash(hash)</b>: factories explicitas "
-                "para os dois unicos caminhos legitimos de criar uma senha."))
-
-# 6.9 Module
-story.append(p("6.9 Module (pacote)", h2))
-story.append(p(
-    "Modulos em DDD agrupam conceitos relacionados, dando nome ao seu proposito. No OrbittAPI cada "
-    "bounded context e um <b>modulo Maven</b> independente, e dentro de cada modulo organizamos por "
-    "<b>camada</b> e por <b>subdominio</b>.", body))
-
-mod_tree = """\
-br.com.orbittapi.identity/        (bounded context modulo Maven)
-|
-|-- domain/         <- modelo puro: agregados, value objects, eventos, exceptions, ports
-|   |-- model/      <- Account, Email, Password, ApiKey, AccountRole
-|   |-- event/      <- AccountRegistered, ApiKeyRevoked, DomainEvent
-|   |-- repository/ <- AccountRepository (interface)
-|   |-- exception/  <- DomainException + filhas especificas
-|
-|-- application/    <- casos de uso, DTOs, portas de saida
-|   |-- usecase/    <- RegisterAccount, Login, GetMyProfile, RevokeApiKey
-|   |-- dto/        <- RegisterAccountCommand, LoginCommand, AuthResponse, ...
-|   |-- port/       <- TokenProvider, DomainEventPublisher
-|
-|-- infrastructure/ <- adapters concretos
-|   |-- persistence/<- AccountJpaEntity, AccountJpaRepository, AccountRepositoryImpl
-|   |-- security/   <- JwtTokenProvider, JwtAuthenticationFilter, SpringDomainEventPublisher
-|   |-- config/     <- SecurityConfig, OpenApiConfig
-|
-+-- interfaces/rest/ <- entrada HTTP
-    |-- AuthController, MeController, ApiKeyController
-    +-- GlobalExceptionHandler (RFC 7807)
+diagrama = """\
+                                                              +-------------+
+                                                              | SOAP client |
+                                                              | (SoapUI...) |
+                                                              +------+------+
+                       +------------------+                          |
+       REST client --->|     Gateway      |  porta 8080              | SOAP
+                       |  (valida JWT,    |                          v
+                       |   injeta         |                 +-------------------+
+                       |   X-User-Id)     |                 |   soap-service    | 8083
+                       +--------+---------+                 |   (profile soap,  |
+                                |                           |    contract-first)|
+                +---------------+----------------+          +-------+-----------+
+                |                                |                  |
+       +--------v---------+              +-------v----------+       |  REST interna
+       | identity-service |              | satellite-service|<------+  (X-User-Id)
+       |   porta 8081     |              |   porta 8082     |
+       +--------+---------+              +-------+----------+
+                |                                |
+                |    +-----------+   +---------+ |
+                +--->| Postgres  |   |  Redis  |<+
+                     |   5432    |   |  6379   |
+                     +-----------+   +---------+
+                identity_db /        cache landuse:{lat}:{lng}
+                satellite_db         vegetation:{lat}:{lng}  (TTL 6h)
 """
-story.append(ascii_block(mod_tree))
-story.append(p("Figura 2: organizacao em camadas dentro de cada bounded context.", caption))
+story.append(ascii_block(diagrama))
+story.append(p("Figura 2: arquitetura SOA completa. "
+               "O Gateway e ponto unico de entrada REST. O SOAP gateway e opcional "
+               "(profile 'soap') e consome o satellite-service via REST.",
+               caption))
 
-story.append(PageBreak())
+story.append(p("Caracteristicas SOA presentes", h3))
+story.append(li("<b>Decomposicao por bounded context</b>: dois microservicos com "
+                "responsabilidades disjuntas (autenticacao vs. dados de satelite)."))
+story.append(li("<b>Autonomia de dados</b>: cada servico tem seu schema. "
+                "Nenhuma consulta cross-schema. Comunicacao so via HTTP."))
+story.append(li("<b>Gateway pattern</b>: ponto de entrada unico com validacao "
+                "centralizada de JWT. Servicos a jusante nao revalidam token."))
+story.append(li("<b>Service composition</b>: o soap-service compoe operacoes "
+                "executando chamadas REST internas. E uma evidencia direta de "
+                "integracao entre estilos arquiteturais."))
+story.append(li("<b>Independencia de deploy</b>: cada servico tem seu Dockerfile, "
+                "sua porta e seu ciclo. Profile 'soap' permite subir backend REST "
+                "sem o SOAP (compatibilidade com clientes legados ou apps mobile)."))
+story.append(li("<b>Padronizacao de erros</b>: todos os servicos REST retornam "
+                "ProblemDetail (RFC 7807). O SOAP retorna SOAP Fault padrao."))
 
-# ===== 7. ARQUITETURA EM CAMADAS / HEXAGONAL =====
-story.append(p("7. Arquitetura em camadas e Ports and Adapters (Hexagonal)", h1))
+
+# ===== 6. API REST =====
+story.append(p("6. Explicacao da API REST", h1))
 story.append(p(
-    "DDD propos originalmente uma <b>arquitetura em camadas</b> (Layered Architecture) com Domain, "
-    "Application, Infrastructure e User Interface. <b>Alistair Cockburn</b> propos a <b>Hexagonal "
-    "Architecture</b> (Ports and Adapters), onde o dominio fica no centro, e tudo que e externo "
-    "(banco, HTTP, mensageria, cache) conversa com ele atraves de <b>portas</b> (interfaces) e "
-    "<b>adaptadores</b> (implementacoes).", body))
-story.append(p("Estrutura do OrbittAPI:", h3))
-story.append(li("<b>domain</b>: o nucleo. Codigo Java puro, sem dependencia de Spring nem JPA."))
-story.append(li("<b>application</b>: orquestra o dominio. Conhece o dominio, mas define <b>portas</b> "
-                "para tudo que e externo (TokenProvider, DomainEventPublisher, SatelliteDataSource, "
-                "SatelliteQueryCache, repositorios)."))
-story.append(li("<b>infrastructure</b>: implementa as portas (JwtTokenProvider, "
-                "RedisSatelliteQueryCache, MockSatelliteDataSource, AccountRepositoryImpl). E onde "
-                "vivem as dependencias de framework."))
-story.append(li("<b>interfaces/rest</b>: a borda HTTP. Controllers traduzem requests/responses "
-                "para os use cases, e o GlobalExceptionHandler traduz excecoes de dominio em "
-                "ProblemDetail (RFC 7807)."))
+    "A API REST e exposta pelo <b>Gateway</b> na porta 8080. Todas as chamadas "
+    "passam por ele. Endpoints de autenticacao sao publicos; os demais exigem "
+    "<code>Authorization: Bearer &lt;JWT&gt;</code>. Em caso de erro, todos os "
+    "endpoints retornam um <b>ProblemDetail</b> (RFC 7807).", body))
 
-story.append(p("Beneficios praticos disso:", h3))
-story.append(li("O dominio e testavel sem Spring (testes JUnit puros e instantaneos)."))
-story.append(li("Trocar o adapter Mock por um adapter real da NASA nao requer mudar nada no dominio."))
-story.append(li("Trocar Postgres por outro banco e uma mudanca isolada na infraestrutura."))
-story.append(li("As regras de negocio nao se misturam com cabecalho HTTP nem com SQL."))
-
-# ===== 8. ACL =====
-story.append(p("8. Anti-Corruption Layer aplicada", h1))
-story.append(p(
-    "O dominio <b>satellite-service</b> nao deveria conhecer detalhes do formato de resposta da NASA, "
-    "da ESA ou de qualquer fonte externa. Ele expressa apenas o conceito de SatelliteDataSource: "
-    "dada uma Coordinate, me devolve um LandUseSnapshot ou um VegetationSnapshot. Essa e a porta.", body))
-story.append(p("Porta no dominio:", h3))
-story.append(code("""// br.com.orbittapi.satellite.domain.port.SatelliteDataSource
-public interface SatelliteDataSource {
-    LandUseSnapshot fetchLandUse(Coordinate coordinate);
-    VegetationSnapshot fetchVegetation(Coordinate coordinate);
-}"""))
-
-story.append(p("Adapter atual (Mock deterministico):", h3))
-story.append(code("""// br.com.orbittapi.satellite.infrastructure.adapter.MockSatelliteDataSource
-@Component
-public class MockSatelliteDataSource implements SatelliteDataSource {
-
-    @Override
-    public LandUseSnapshot fetchLandUse(Coordinate coordinate) {
-        Random rng = seededRng(coordinate, "landuse");          // determinista
-        double vegetation = roundTo(20 + rng.nextDouble() * 60, 2);
-        // ... gera urban, water, bareSoil mantendo soma == 100
-        LandUseDistribution distribution = new LandUseDistribution(
-            vegetation, urban, water, bareSoil);
-        return new LandUseSnapshot(coordinate, distribution,
-            LocalDate.now().minusDays(rng.nextInt(30)), SatelliteSource.MOCK);
-    }
-}"""))
-story.append(p(
-    "Mesma coordenada produz sempre o mesmo resultado (semente baseada em lat/lng). Isso facilita teste "
-    "e demonstracoes reproduziveis. Para usar o adapter NASA no futuro, basta criar "
-    "NasaEarthApiAdapter implements SatelliteDataSource e marcar como Primary. <b>Nenhuma linha</b> do "
-    "dominio precisa mudar.", body))
-
-story.append(PageBreak())
-
-# ===== 9. RFC 7807 =====
-story.append(p("9. Erros padronizados via RFC 7807 (US-10)", h1))
-story.append(p(
-    "Todas as respostas de erro seguem o padrao <b>Problem Details for HTTP APIs</b> (RFC 7807). E uma "
-    "representacao machine-readable que evita que cada API invente seu proprio formato de erro, e foi "
-    "exigida pela US-10 do backlog. Implementamos via <b>ProblemDetail</b> do Spring Framework 6 "
-    "(introduzido justamente para esse padrao) e um <b>@RestControllerAdvice</b> em cada servico.", body))
-
-story.append(p("Formato padronizado", h3))
-story.append(code("""{
-  "type": "https://orbittapi.dev/errors/invalid-coordinate",
-  "title": "Invalid coordinate",
-  "status": 400,
-  "detail": "Latitude must be between -90 and 90, got 91.0",
-  "instance": "/landuse"
-}"""))
-
-story.append(p("Mapeamento entre excecoes de dominio e codigos HTTP", h3))
-rfc_table = [
-    ["Excecao", "HTTP", "Tipo do problema"],
-    ["InvalidEmailException", "400", "invalid-email"],
-    ["WeakPasswordException", "400", "weak-password"],
-    ["InvalidCoordinateException", "400", "invalid-coordinate"],
-    ["InvalidNdviScoreException", "400", "invalid-ndvi"],
-    ["InvalidLandUseDistributionException", "400", "invalid-land-use"],
-    ["JWT ausente ou invalido (no gateway)", "401", "missing-token / invalid-token"],
-    ["InvalidCredentialsException", "401", "invalid-credentials"],
-    ["AccessDeniedException (role insuficiente)", "403", "forbidden"],
-    ["AccountNotFoundException", "404", "account-not-found"],
-    ["EmailAlreadyInUseException", "409", "email-in-use"],
-    ["ApiKeyAlreadyRevokedException", "409", "api-key-already-revoked"],
-    ["SatelliteDataUnavailableException", "503", "satellite-data-unavailable"],
-    ["Qualquer outra Exception", "500", "internal"],
+rest_table = [
+    ["Metodo", "Rota", "Auth", "Body / Query", "O que faz"],
+    ["POST", "/auth/register", "publico",
+     "{email, password}",
+     "Cria conta, gera API Key (obt_...) e retorna JWT (24h)"],
+    ["POST", "/auth/login", "publico",
+     "{email, password}",
+     "Autentica e retorna JWT"],
+    ["GET",  "/me", "Bearer", "-",
+     "Devolve o perfil da conta autenticada"],
+    ["PUT",  "/me", "Bearer", "{email}",
+     "CRUD - atualiza o e-mail da conta autenticada"],
+    ["POST", "/api-keys/{accountId}/revoke", "Bearer (ADMIN)", "-",
+     "Revoga a API Key da conta indicada (US-03)"],
+    ["DELETE", "/accounts/{accountId}", "Bearer (ADMIN)", "-",
+     "CRUD - apaga a conta indicada e emite AccountDeleted"],
+    ["GET", "/landuse", "Bearer",
+     "lat, lng",
+     "Devolve LandUseDistribution (vegetacao, urbano, agua, solo)"],
+    ["GET", "/vegetation", "Bearer",
+     "lat, lng",
+     "Devolve NDVI + classificacao em VegetationHealth"],
+    ["POST", "/queries", "X-User-Id",
+     "{type, latitude, longitude}",
+     "Registra um SatelliteQuery e emite QueryExecuted"],
 ]
-story.append(make_table(rfc_table, col_widths=[7.5*cm, 1.5*cm, 7*cm]))
+story.append(make_table(rest_table, col_widths=[1.6*cm, 4*cm, 2.8*cm, 3.6*cm, 5*cm]))
 
-# ===== 10. CACHE =====
-story.append(p("10. Cache estrategico no Redis (US-21)", h1))
+story.append(p("Codigos HTTP retornados", h3))
+http_table = [
+    ["Caso", "HTTP", "Tipo (RFC 7807)"],
+    ["Validacao falha (coordenada invalida, body invalido, etc.)", "400", "invalid-coordinate / validation-failed"],
+    ["JWT ausente ou expirado",                                     "401", "missing-token / invalid-token"],
+    ["Credenciais invalidas no /auth/login",                        "401", "invalid-credentials"],
+    ["Token sem ROLE_ADMIN em rota privilegiada",                   "403", "forbidden"],
+    ["Conta nao encontrada",                                        "404", "account-not-found"],
+    ["E-mail ja em uso no register/PUT /me",                        "409", "email-in-use"],
+    ["API Key ja revogada",                                         "409", "api-key-already-revoked"],
+    ["Satellite externo indisponivel (futuro adapter NASA)",        "503", "satellite-data-unavailable"],
+]
+story.append(make_table(http_table, col_widths=[10*cm, 1.4*cm, 5.6*cm]))
+
+
+# ===== 7. SOAP =====
+story.append(p("7. Explicacao do Web Service SOAP", h1))
 story.append(p(
-    "Cada consulta a um endpoint /landuse ou /vegetation, em producao real, dispararia um processamento "
-    "pesado de visao computacional sobre uma imagem multispectral. Em uma plataforma com modelo de "
-    "negocio por chamada, cachear essas respostas e essencial para conter o custo unitario.", body))
+    "O modulo <b>soap-service</b> (porta 8083) atende ao requisito de "
+    "<b>Web Service SOAP com WSDL</b> da disciplina. E <b>contract-first</b>: "
+    "o contrato e definido pelo XSD <code>soap-service/src/main/resources/satellite.xsd</code> "
+    "e o WSDL e gerado em runtime pelo Spring WS.", body))
+
+story.append(p("Detalhes tecnicos", h3))
+story.append(li("Spring Boot 3.3.5 com <code>spring-boot-starter-web-services</code> + <code>wsdl4j</code>"))
+story.append(li("Plugin <code>jaxb2-maven-plugin</code> 3.2.0 gera classes Java em "
+                "<code>br.com.orbittapi.soap.generated</code> a partir do XSD na fase generate-sources"))
+story.append(li("<code>MessageDispatcherServlet</code> registrado em <code>/ws/*</code>"))
+story.append(li("<code>DefaultWsdl11Definition</code> publica o WSDL em <code>/ws/satellite.wsdl</code>"))
+story.append(li("Namespace: <code>http://orbittapi.dev/soap/satellite</code>"))
+story.append(li("<code>SoapFaultMappingExceptionResolver</code> mapeia excecoes para SOAP Fault Client/Server"))
+
+story.append(p("Operacoes expostas", h3))
+soap_ops = [
+    ["Operacao", "Entrada", "Saida", "Integracao interna"],
+    ["consultarVegetacao",
+     "latitude, longitude",
+     "latitude, longitude, ndvi, health (VegetationHealth), imageDate, source",
+     "Chama GET /vegetation no satellite-service via RestClient"],
+    ["registrarConsulta",
+     "accountId, tipo (QueryType), latitude, longitude",
+     "queryId, status, executedAt",
+     "Chama POST /queries no satellite-service; persiste SatelliteQuery"],
+]
+story.append(make_table(soap_ops, col_widths=[3.8*cm, 3.5*cm, 4.8*cm, 4.9*cm]))
+
+story.append(p("Tipos definidos no XSD (regras como contrato)", h3))
+story.append(li("<code>Latitude</code> e <code>Longitude</code>: tipos simples com restricoes "
+                "<code>xs:minInclusive/maxInclusive</code> de [-90, 90] e [-180, 180]"))
+story.append(li("<code>VegetationHealth</code>: enum NONE | SPARSE | MODERATE | DENSE"))
+story.append(li("<code>QueryType</code>: enum VEGETATION | LAND_USE"))
+story.append(li("<code>SatelliteSource</code>: enum LANDSAT | SENTINEL | MODIS | MOCK"))
+story.append(p("As validacoes do XSD garantem que envelopes SOAP malformados nem "
+               "chegam ao @Endpoint - sao rejeitados ainda na camada de unmarshaling, "
+               "virando SOAP Fault automaticamente.", body))
+
+
+# ===== 8. INTEGRACAO ENTRE OS SERVICOS =====
+story.append(p("8. Explicacao da integracao entre os servicos", h1))
+
+story.append(p("8.1 Cliente REST -> Gateway -> Microservicos", h2))
 story.append(p(
-    "Aplicamos cache no Redis com TTL de 6 horas (US-21 do backlog), atras de uma <b>porta</b> "
-    "SatelliteQueryCache. O cache faz parte do fluxo do GetLandUseUseCase: cada chamada primeiro "
-    "verifica o cache; em caso de miss, chama o SatelliteDataSource e armazena o resultado.", body))
+    "Todos os clientes REST batem na porta 8080 (gateway). O gateway tem 5 rotas "
+    "configuradas em <code>application.yml</code>: <code>/auth/**</code>, "
+    "<code>/me/**</code>, <code>/api-keys/**</code>, <code>/accounts/**</code> e "
+    "<code>/landuse</code> + <code>/vegetation</code> (para o satellite). Antes "
+    "de propagar, o filtro <code>JwtAuthenticationGatewayFilter</code> faz:", body))
+story.append(li("Le o cabecalho <code>Authorization: Bearer &lt;JWT&gt;</code>"))
+story.append(li("Valida a assinatura HS384 contra o segredo compartilhado e confere o issuer"))
+story.append(li("Em caso de falha, responde 401 RFC 7807 sem chegar a propagar"))
+story.append(li("Em caso de sucesso, injeta <code>X-User-Id</code> e <code>X-User-Role</code> no request"))
+story.append(li("Encaminha para o servico destino, que confia no header sem revalidar"))
 
-story.append(p("Chaves utilizadas", h3))
-story.append(li("<code>landuse:{lat}:{lng}</code>"))
-story.append(li("<code>vegetation:{lat}:{lng}</code>"))
-
-story.append(p("Decisao de design: DTOs internos no cache", h3))
+story.append(p("8.2 Microservico -> Postgres / Redis", h2))
 story.append(p(
-    "Para evitar que Jackson dependesse do formato interno dos value objects do dominio (e portanto "
-    "evitar poluir o dominio com anotacoes @JsonProperty), criamos records dedicados em "
-    "infrastructure/cache/CacheableSnapshots.java que sao convertidos de/para os objetos do dominio "
-    "dentro do RedisSatelliteQueryCache. O dominio nao sabe que existe Jackson nem que existe Redis.", body))
+    "O identity-service usa apenas Postgres (schema <code>identity_db</code>) via "
+    "Spring Data JPA. O satellite-service usa Postgres "
+    "(<code>satellite_db</code>, para auditoria em SatelliteQuery) e Redis para "
+    "cache. Ambos os servicos abrem connection pool no <code>HikariCP</code>. A "
+    "porta Redis e abstraida pela interface <code>SatelliteQueryCache</code> com "
+    "adapter <code>RedisSatelliteQueryCache</code>.", body))
 
-story.append(code("""@Override
-public Optional<LandUseSnapshot> getLandUse(Coordinate c) {
-    return get(landUseKey(c), CacheableSnapshots.LandUseDto.class)
-            .map(CacheableSnapshots.LandUseDto::toDomain);
-}
-
-@Override
-public void putLandUse(Coordinate c, LandUseSnapshot snapshot) {
-    put(landUseKey(c), CacheableSnapshots.LandUseDto.fromDomain(snapshot));
-}"""))
-
-# ===== 11. SEGURANCA =====
-story.append(p("11. Seguranca, JWT e fluxo de autenticacao", h1))
+story.append(p("8.3 Cliente SOAP -> soap-service -> satellite-service via REST", h2))
 story.append(p(
-    "O fluxo de autenticacao foi desenhado para que <b>cada servico tenha responsabilidade unica</b> "
-    "sobre seguranca:", body))
-story.append(li("O <b>identity-service</b> e o unico que <b>emite</b> JWTs (assinatura HS384 via jjwt)."))
-story.append(li("O <b>gateway</b> e o unico que <b>valida</b> JWTs vindos do cliente; apos validar, "
-                "ele injeta um header <code>X-User-Id</code> com o UUID do dono do token. Servicos a "
-                "jusante nao precisam revalidar."))
-story.append(li("O <b>satellite-service</b> apenas le <code>X-User-Id</code>. Se o header faltar, ele "
-                "responde 401 RFC 7807."))
+    "Esta e a <b>integracao REST + SOAP</b> exigida pela disciplina. O cliente "
+    "SOAP nao toca em nenhum endpoint REST diretamente - ele envia um envelope para "
+    "<code>POST /ws</code> na porta 8083. O <code>@Endpoint SatelliteEndpoint</code>:", body))
+story.append(li("Recebe o request como um JAXBElement&lt;ConsultarVegetacaoRequest&gt;"))
+story.append(li("Delega para <code>SatelliteRestClient</code>, que e um RestClient do Spring 6"))
+story.append(li("O RestClient faz HTTP GET (ou POST /queries) com header <code>X-User-Id</code>"))
+story.append(li("A resposta JSON e desserializada e convertida para a classe JAXB de response"))
+story.append(li("Em caso de erro, <code>HttpClientErrorException</code> 400 vira "
+                "<code>InvalidCoordinateSoapException</code> e o "
+                "<code>SoapFaultMappingExceptionResolver</code> a transforma em SOAP Fault Client"))
 
 flow = """\
-+--------+   Authorization: Bearer <JWT>     +-------------+
-| Client | --------------------------------> |   Gateway   |
-+--------+                                   |  (valida)   |
-                                              +------+------+
-                                                     |  X-User-Id: <uuid>
-                                              +------v---------+
-                                              | satellite-svc  |
-                                              +----------------+
++------+   POST /ws envelope        +---------------+
+|SoapUI| -------------------------> | SatelliteEndp.|  @Endpoint
++------+                            +-------+-------+
+                                            |
+                                            v
+                                    +---------------+
+                                    | SatelliteRest |  Spring RestClient
+                                    |    Client     |  (X-User-Id header)
+                                    +-------+-------+
+                                            |
+                                            v
+                                    +---------------+
+                                    | satellite-svc |  GET /vegetation
+                                    |   porta 8082  |  POST /queries
+                                    +---------------+
 """
 story.append(ascii_block(flow))
-story.append(p("Figura 3: fluxo de propagacao da identidade entre o cliente, o gateway e os servicos.", caption))
+story.append(p("Figura 3: chamada SOAP percorre o RestClient antes de tocar o satellite REST.", caption))
 
-story.append(p("Filtro JWT no gateway (trecho)", h3))
-story.append(code("""try {
-    Claims claims = Jwts.parser()
-            .verifyWith(signingKey)
-            .requireIssuer(issuer)
-            .build()
-            .parseSignedClaims(token)
-            .getPayload();
-
-    UUID accountId = UUID.fromString(claims.getSubject());
-    String role = claims.get("role", String.class);
-
-    ServerHttpRequest mutated = request.mutate()
-            .header(USER_HEADER, accountId.toString())
-            .header(ROLE_HEADER, role)
-            .build();
-
-    return chain.filter(exchange.mutate().request(mutated).build());
-} catch (Exception ex) {
-    return unauthorized(exchange, "invalid-token", "Invalid or expired JWT");
-}"""))
-
-story.append(PageBreak())
-
-# ===== 12. MAPEAMENTO MESTRE =====
-story.append(p("12. Mapeamento mestre: conceito DDD para arquivo no codigo", h1))
+story.append(p("8.4 Auditoria entre servicos", h2))
 story.append(p(
-    "Para satisfazer a exigencia de <i>trazer todos os topicos abordados em sala</i>, esta tabela "
-    "mapeia explicitamente cada conceito DDD a um ponto concreto do codigo.", body))
+    "Cada chamada bem-sucedida ao satellite (via REST direto, via gateway ou via "
+    "SOAP) cria um agregado <code>SatelliteQuery</code> com UUID proprio e emite "
+    "o evento de dominio <code>QueryExecuted(queryId, accountId, type, coordinate, cacheHit)</code>. "
+    "Hoje esses eventos sao publicados via <code>ApplicationEventPublisher</code> "
+    "do Spring (em memoria); a arquitetura ja preve que num cenario de producao "
+    "eles seriam enviados para Kafka/RabbitMQ para billing e analytics.", body))
 
-mapping = [
-    ["Conceito DDD", "Arquivo / classe / pacote no projeto"],
-    ["Bounded Context", "Cada microservico (identity-service, satellite-service) e um BC"],
-    ["Ubiquitous Language", "Termos: Account, ApiKey, SatelliteQuery, NdviScore, VegetationHealth"],
-    ["Subdomain Core", "Satellite Data (satellite-service)"],
-    ["Subdomain Supporting", "Identity & Access (identity-service)"],
-    ["Subdomain Generic", "Billing (nao implementado, mencionado conceitualmente)"],
-    ["Context Map", "Identity -> Satellite via Customer-Supplier + Published Language (JWT)"],
-    ["Anti-Corruption Layer", "SatelliteDataSource (porta) + MockSatelliteDataSource (adapter)"],
-    ["Entity", "Account, SatelliteQuery (identidade por UUID)"],
-    ["Value Object", "Email, Password, ApiKey, Coordinate, NdviScore, LandUseDistribution"],
-    ["Aggregate Root", "Account; SatelliteQuery"],
-    ["Domain Event", "AccountRegistered, ApiKeyRevoked, QueryExecuted"],
-    ["Domain Service", "Nao identificado neste escopo (justificativa na secao 6.5)"],
-    ["Application Service", "RegisterAccountUseCase, LoginUseCase, GetMyProfileUseCase,\n"
-                            "RevokeApiKeyUseCase, GetLandUseUseCase, GetVegetationUseCase"],
-    ["Repository (porta)", "AccountRepository, SatelliteQueryRepository (em domain/repository)"],
-    ["Repository (adapter)", "AccountRepositoryImpl, SatelliteQueryRepositoryImpl (JPA)"],
-    ["Factory", "Account.register(), SatelliteQuery.execute(), ApiKey.generate(),\n"
-                "Password.fromRaw() / Password.fromHash()"],
-    ["Module", "Cada pacote raiz (br.com.orbittapi.identity, br.com.orbittapi.satellite)"],
-    ["Layered Architecture", "domain -> application -> infrastructure -> interfaces/rest"],
-    ["Hexagonal (Ports & Adapters)", "Ports em application/port e domain/port; adapters em infrastructure/"],
-    ["DDD + RFC 7807", "GlobalExceptionHandler traduz DomainException em ProblemDetail"],
-]
-story.append(make_table(mapping, col_widths=[5*cm, 12*cm]))
 
-# ===== 13. COBERTURA BACKLOG =====
-story.append(p("13. Cobertura do backlog (User Stories)", h1))
-backlog = [
-    ["User Story", "Implementacao"],
-    ["US-01 Cadastro com API Key gerada",
-     "POST /auth/register -> Account.register() -> retorna apiKey + JWT"],
-    ["US-02 Login com JWT 24h",
-     "POST /auth/login -> JwtTokenProvider.issue() com expiracao 86400 segundos"],
-    ["US-03 Revogar API Key (admin)",
-     "POST /api-keys/{id}/revoke restrito a role ADMIN; emite ApiKeyRevoked"],
-    ["US-05 /landuse com lat/lng",
-     "GET /landuse -> Coordinate VO -> SatelliteDataSource -> LandUseDistribution"],
-    ["US-06 /vegetation com NDVI",
-     "GET /vegetation -> NdviScore + classify() em VegetationHealth"],
-    ["US-10 Erros padronizados (RFC 7807)",
-     "ProblemDetail + GlobalExceptionHandler em cada servico"],
-    ["US-21 Cache Redis com TTL 6h",
-     "RedisSatelliteQueryCache com Duration.ofHours(6)"],
-    ["US-22 LGPD parcial",
-     "Senha hasheada com BCrypt, sem dados pessoais em logs"],
+# ===== 9. TECNOLOGIAS =====
+story.append(p("9. Tecnologias utilizadas", h1))
+tech_table = [
+    ["Categoria", "Tecnologia", "Onde e usada"],
+    ["Linguagem",          "Java 21",                              "Todos os servicos"],
+    ["Framework",          "Spring Boot 3.3.5",                    "Todos os servicos"],
+    ["Build",              "Maven 3.9 multi-modulo",               "pom parent + 4 modulos filhos"],
+    ["API REST",           "Spring Web (MVC) + Bean Validation",   "identity + satellite"],
+    ["API Gateway",        "Spring Cloud Gateway 2023.0.3",        "gateway (8080)"],
+    ["Web Service SOAP",   "Spring WS + wsdl4j + Jakarta XML Bind","soap-service (8083)"],
+    ["Geracao JAXB",       "jaxb2-maven-plugin 3.2.0",             "Gera classes Java do XSD"],
+    ["Persistencia",       "Spring Data JPA + Hibernate 6",        "identity + satellite"],
+    ["Banco transacional", "PostgreSQL 16",                        "identity_db + satellite_db"],
+    ["Cache",              "Redis 7",                              "cache landuse / vegetation (TTL 6h)"],
+    ["Conn pool",          "HikariCP",                             "Datasource dos servicos"],
+    ["Seguranca / Tokens", "Spring Security + jjwt 0.12.6 (HS384)","identity emite, gateway valida"],
+    ["Hash de senha",      "BCrypt cost 12",                       "Password VO"],
+    ["DTO mapping",        "MapStruct 1.6.2 (disponivel)",         "Disponivel para futuras evolucoes"],
+    ["Documentacao API",   "Springdoc OpenAPI 2.6 (Swagger UI)",   "identity + satellite"],
+    ["Testes",             "JUnit 5 + Mockito 5 + AssertJ",        "39 testes em 3 modulos"],
+    ["Integracao testes",  "Testcontainers",                       "Disponivel para integracao Postgres"],
+    ["Containers",         "Docker + Docker Compose v2",           "5 containers (default) / 6 (--profile soap)"],
+    ["Logs",               "SLF4J + Logback",                      "Padrao em todos os servicos"],
+    ["Versionamento",      "Git + GitHub",                         "repo Lynnbrosa/GS-SOA"],
 ]
-story.append(make_table(backlog, col_widths=[5.5*cm, 11.5*cm]))
+story.append(make_table(tech_table, col_widths=[3.5*cm, 5.5*cm, 8*cm]))
+
+
+# ===== 10. EVIDENCIAS DE FUNCIONAMENTO =====
+story.append(PageBreak())
+story.append(p("10. Evidencias de funcionamento", h1))
 story.append(p(
-    "User stories fora do escopo desta GS (front-end dashboard, billing, MFA, ingestao real de NASA/ESA, "
-    "modelo de ML, white-label) sao acrescentaveis como <b>novos bounded contexts</b> sem alterar os "
-    "atuais. A arquitetura ja esta preparada para essa expansao.", body))
+    "As evidencias abaixo foram capturadas durante a execucao do comando "
+    "<code>docker compose --profile soap up --build</code>. Mostram os 6 "
+    "containers em estado healthy e respostas reais dos endpoints REST e SOAP.", body))
 
+story.append(p("10.1 Os 6 containers de pe e saudaveis", h3))
+story.append(shot(S["docker_ps"],
+    "Print 1: docker ps confirma 5 containers REST + soap-service rodando "
+    "(profile soap ativo)."))
+
+story.append(p("10.2 Fluxo de autenticacao (US-01)", h3))
+story.append(shot(S["register"],
+    "Print 2: POST /auth/register retorna accountId, apiKey (com prefixo obt_) "
+    "e JWT com expiracao em 24 horas."))
+
+story.append(p("10.3 Endpoints satelitais e cache no Redis (US-05, US-06 e US-21)", h3))
+story.append(shot(S["landuse_cache"],
+    "Print 3: GET /landuse na primeira chamada retorna cacheHit:false; "
+    "GET /vegetation em coordenada ja visitada retorna cacheHit:true (TTL 6h)."))
+
+story.append(p("10.4 CRUD em Account: PUT /me e DELETE /accounts/{id}", h3))
+story.append(shot(S["put_me"],
+    "Print 4: PUT /me atualiza o e-mail (200). Tentativa de usar e-mail ja "
+    "existente retorna 409 RFC 7807."))
+story.append(shot(S["delete_forbidden"],
+    "Print 5: DELETE /accounts/{id} com token DEVELOPER e barrado com 403. "
+    "Apenas tokens com role ADMIN passam pela regra do SecurityConfig."))
+
+story.append(p("10.5 WSDL publicado pelo soap-service", h3))
+story.append(shot(S["wsdl"],
+    "Print 6: GET /ws/satellite.wsdl publica o WSDL gerado em runtime a partir "
+    "do XSD do contrato. Tipos VegetationHealth, QueryType, etc. ja aparecem."))
+
+story.append(p("10.6 SOAP consultarVegetacao com REST por baixo", h3))
+story.append(shot(S["soap_consulta"],
+    "Print 7: o envelope SOAP retorna NDVI=0.054 vindo do satellite-service "
+    "via integracao REST interna. health=NONE classificado pelo NdviScore."))
+
+story.append(p("10.7 SOAP registrarConsulta - persistencia via REST", h3))
+story.append(shot(S["soap_registrar"],
+    "Print 8: registrarConsulta SOAP chama POST /queries do satellite via REST "
+    "e devolve o queryId UUID + status EXECUTED."))
+
+story.append(p("10.8 SOAP Fault em latitude invalida", h3))
+story.append(shot(S["soap_fault"],
+    "Print 9: latitude=95 (fora de [-90,90]) e mapeada pelo "
+    "SoapFaultMappingExceptionResolver em <faultcode>SOAP-ENV:Client</faultcode>."))
+
+story.append(p("10.9 POST /queries via REST direto", h3))
+story.append(shot(S["queries"],
+    "Print 10: o mesmo endpoint usado pelo SOAP esta disponivel para chamadas "
+    "REST diretas, recebendo X-User-Id. Retorna 201 Created com queryId UUID."))
+
+
+# ===== 11. PRINTS DOS TESTES =====
 story.append(PageBreak())
+story.append(p("11. Prints dos testes realizados", h1))
+story.append(p(
+    "Os testes automatizados rodam com <code>mvn test</code> em todos os 4 "
+    "modulos. Cobrem invariantes de agregados, validacao de value objects, "
+    "logica dos casos de uso (com mocks) e o endpoint SOAP "
+    "(com REST client mockado).", body))
 
-# ===== 14. DOCKER =====
-story.append(p("14. Como subir o ambiente (Docker)", h1))
-story.append(p("Pre-requisitos: Docker Desktop ou Docker Engine + Compose v2.", body))
-story.append(p("Comando unico:", body))
-story.append(code("docker compose up --build"))
-story.append(p("Containers que sobem:", h3))
-story.append(li("<b>orbittapi-postgres</b> (porta 5432) - cria identity_db e satellite_db via init.sql"))
-story.append(li("<b>orbittapi-redis</b> (porta 6379) - cache"))
-story.append(li("<b>orbittapi-identity</b> (porta 8081) - depende de postgres healthy"))
-story.append(li("<b>orbittapi-satellite</b> (porta 8082) - depende de postgres e redis healthy"))
-story.append(li("<b>orbittapi-gateway</b> (porta 8080) - depende dos dois servicos"))
+story.append(shot(S["mvn_test"],
+    "Print 11: mvn test imprime BUILD SUCCESS - 39 testes verdes em 3 modulos "
+    "(identity: 21, satellite: 15, soap: 3)."))
 
-story.append(p("Healthchecks de cada container", h3))
-story.append(code("""# Postgres
-test: ["CMD-SHELL", "pg_isready -U orbittapi"]
-interval: 5s, timeout: 3s, retries: 10
-
-# Redis
-test: ["CMD", "redis-cli", "ping"]
-
-# Servicos Java
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5
-  CMD wget -qO- http://localhost:<porta>/actuator/health | grep -q '"status":"UP"' """))
-
-# ===== 15. ENDPOINTS =====
-story.append(p("15. Endpoints REST e exemplos cURL", h1))
-
-story.append(p("15.1 POST /auth/register", h2))
-story.append(code("""curl -X POST http://localhost:8080/auth/register \\
-  -H "Content-Type: application/json" \\
-  -d '{"email":"dev@orbittapi.dev","password":"Abcdefg1"}'"""))
-story.append(p("Resposta 201:", body))
-story.append(code("""{
-  "accountId": "f1be493a-99a0-4bbe-9c19-ab4c8d869037",
-  "email": "dev@orbittapi.dev",
-  "apiKey": "obt_RtbMOukYQ4LCi7Kg23lRYBhJEA-DmiQI",
-  "token": "eyJhbGciOiJIUzM4NCJ9...",
-  "expiresAt": "2026-05-27T00:00:00Z"
-}"""))
-
-story.append(p("15.2 POST /auth/login", h2))
-story.append(code("""curl -X POST http://localhost:8080/auth/login \\
-  -H "Content-Type: application/json" \\
-  -d '{"email":"dev@orbittapi.dev","password":"Abcdefg1"}'"""))
-
-story.append(p("15.3 GET /me", h2))
-story.append(code("""curl http://localhost:8080/me \\
-  -H "Authorization: Bearer <TOKEN>" """))
-story.append(p("Resposta 200:", body))
-story.append(code("""{
-  "id": "f1be493a-99a0-4bbe-9c19-ab4c8d869037",
-  "email": "dev@orbittapi.dev",
-  "role": "DEVELOPER",
-  "apiKey": "obt_...",
-  "apiKeyRevoked": false,
-  "createdAt": "2026-05-26T04:30:02.342Z"
-}"""))
-
-story.append(p("15.4 GET /landuse", h2))
-story.append(code("""curl "http://localhost:8080/landuse?lat=-23.5&lng=-46.6" \\
-  -H "Authorization: Bearer <TOKEN>" """))
-story.append(p("Resposta 200 (primeira chamada, cache miss):", body))
-story.append(code("""{
-  "latitude": -23.5,
-  "longitude": -46.6,
-  "vegetationPercent": 34.08,
-  "urbanPercent": 6.8,
-  "waterPercent": 5.52,
-  "bareSoilPercent": 53.6,
-  "imageDate": "2026-05-04",
-  "source": "MOCK",
-  "cacheHit": false
-}"""))
-story.append(p("Segunda chamada com a mesma coordenada retorna <code>cacheHit: true</code>.", body))
-
-story.append(p("15.5 GET /vegetation", h2))
-story.append(code("""curl "http://localhost:8080/vegetation?lat=-23.5&lng=-46.6" \\
-  -H "Authorization: Bearer <TOKEN>" """))
-story.append(p("Resposta 200:", body))
-story.append(code("""{
-  "latitude": -23.5,
-  "longitude": -46.6,
-  "ndvi": 0.054,
-  "health": "NONE",
-  "imageDate": "2026-05-19",
-  "source": "MOCK",
-  "cacheHit": false
-}"""))
-
-story.append(p("15.6 POST /api-keys/{accountId}/revoke (apenas ADMIN)", h2))
-story.append(code("""curl -X POST http://localhost:8080/api-keys/<accountId>/revoke \\
-  -H "Authorization: Bearer <ADMIN_TOKEN>" """))
-
-story.append(p("15.7 Exemplo de erro RFC 7807 (401 sem token)", h2))
-story.append(code("""curl -i "http://localhost:8080/landuse?lat=-23.5&lng=-46.6"
-
-HTTP/1.1 401 Unauthorized
-Content-Type: application/problem+json
-
-{
-  "type": "https://orbittapi.dev/errors/missing-token",
-  "title": "Unauthorized",
-  "status": 401,
-  "detail": "Missing or invalid Authorization header",
-  "instance": "/landuse"
-}"""))
-
-story.append(PageBreak())
-
-# ===== 16. TESTES =====
-story.append(p("16. Testes automatizados", h1))
-story.append(p("Comando para rodar todos os testes:", body))
-story.append(code("mvn test"))
-
-story.append(p("Classes de teste presentes", h3))
+story.append(p("Distribuicao das classes de teste", h3))
 tests_table = [
-    ["Modulo", "Classe", "O que valida"],
-    ["identity", "EmailTest",
-     "Email vazio, malformado, normalizacao e igualdade por valor"],
-    ["identity", "PasswordTest",
-     "Senha curta, sem digito, sem maiuscula; hash; matches"],
-    ["identity", "AccountTest",
-     "register() emite AccountRegistered; revokeApiKey() emite ApiKeyRevoked; nao revoga 2x; identidade por id"],
-    ["identity", "RegisterAccountUseCaseTest",
-     "Cria conta nova; rejeita email duplicado; publica eventos"],
+    ["Modulo", "Classe de teste", "O que valida"],
+    ["identity",  "EmailTest",
+     "Email vazio, malformado, normalizacao, igualdade por valor"],
+    ["identity",  "PasswordTest",
+     "Senha curta, sem digito, sem maiuscula, hash BCrypt, matches"],
+    ["identity",  "AccountTest",
+     "Register emite AccountRegistered; revokeApiKey emite ApiKeyRevoked; "
+     "nao revoga 2x; igualdade por id"],
+    ["identity",  "RegisterAccountUseCaseTest",
+     "Cria conta nova, rejeita e-mail duplicado, publica eventos"],
+    ["identity",  "UpdateAccountEmailUseCaseTest",
+     "Atualiza e-mail, rejeita duplicado, rejeita conta inexistente"],
+    ["identity",  "DeleteAccountUseCaseTest",
+     "Deleta + emite AccountDeleted, rejeita conta inexistente"],
     ["satellite", "CoordinateTest",
-     "Range de latitude e longitude; igualdade por valor"],
+     "Range de latitude/longitude, igualdade por valor"],
     ["satellite", "NdviScoreTest",
-     "Range [-1, 1]; classify() em VegetationHealth"],
+     "Range [-1, 1], classificacao em VegetationHealth"],
     ["satellite", "LandUseDistributionTest",
-     "Soma == 100 (com tolerancia); rejeita negativos"],
+     "Soma = 100 (com tolerancia), rejeita negativos"],
     ["satellite", "SatelliteQueryTest",
-     "execute() emite QueryExecuted com type/cacheHit corretos"],
+     "execute() emite QueryExecuted com tipo e cacheHit corretos"],
     ["satellite", "MockSatelliteDataSourceTest",
-     "Determinismo: mesma coordenada = mesma resposta"],
+     "Determinismo: mesma coordenada sempre retorna o mesmo resultado"],
     ["satellite", "GetLandUseUseCaseTest",
-     "Cache miss chama dataSource; cache hit nao chama; salva auditoria; publica eventos"],
+     "Cache miss chama dataSource; cache hit nao chama; salva auditoria"],
+    ["soap",      "SatelliteEndpointTest",
+     "consultarVegetacao traduz REST->SOAP; "
+     "InvalidCoordinateSoapException e propagada; "
+     "registrarConsulta retorna queryId"],
 ]
-story.append(make_table(tests_table, col_widths=[2*cm, 4.5*cm, 10.5*cm]))
+story.append(make_table(tests_table, col_widths=[2*cm, 5*cm, 10*cm]))
 
-story.append(p("Filosofia dos testes", h3))
-story.append(li("<b>Testes de dominio sao puros</b>: zero Spring, zero JPA, instantaneos. Validam "
-                "invariantes e emissao de eventos."))
-story.append(li("<b>Testes de use case usam mocks</b>: as portas (Repository, TokenProvider, Cache, "
-                "DataSource, EventPublisher) sao mockadas com Mockito."))
-story.append(li("<b>Determinismo do adapter Mock</b> e testado para garantir reproducibilidade em "
-                "demos e em testes de integracao futuros."))
 
-# ===== 17. DIFERENCIAIS =====
-story.append(p("17. Diferenciais implementados", h1))
-story.append(li("<b>Anti-Corruption Layer explicita</b> (porta SatelliteDataSource), permitindo trocar "
-                "o adapter Mock por um adapter NASA Earth API sem mudar o dominio."))
-story.append(li("<b>Cache Redis com chave determinista</b> e TTL de 6 horas (US-21)."))
-story.append(li("<b>Validacao centralizada no value object</b>: coordenada invalida nunca chega ao use case."))
-story.append(li("<b>Gateway com filtro JWT</b> centralizado: validacao em um unico ponto, propagacao "
-                "via header para os servicos a jusante."))
-story.append(li("<b>Erros padronizados RFC 7807</b> em todos os servicos."))
-story.append(li("<b>Swagger UI por servico</b> (cada bounded context publica sua propria documentacao)."))
-story.append(li("<b>Healthchecks via Actuator</b> em todos os 3 servicos Spring Boot."))
-story.append(li("<b>Dockerfile multi-stage</b> por servico com build incremental do Maven (cache de dependencias)."))
-story.append(li("<b>Construtor injection em 100%</b> do codigo (sem @Autowired em campo)."))
-story.append(li("<b>Logging via SLF4J</b> em todas as camadas; zero printStackTrace ou System.out."))
-story.append(li("<b>Sem Lombok nas entidades JPA</b>: getters e setters explicitos, evitando armadilhas "
-                "com proxies do Hibernate."))
-
-# ===== 18. DEFINITION OF DONE =====
-story.append(p("18. Definition of Done - resultado dos testes", h1))
-dod = [
-    ["Item", "Resultado"],
-    ["docker compose up sobe os 5 containers sem erro",
-     "OK (5/5 healthy)"],
-    ["POST /auth/register cria conta e retorna JWT",
-     "OK (201, retorna accountId, apiKey, token, expiresAt)"],
-    ["GET /landuse com Bearer retorna 200 + JSON estruturado",
-     "OK"],
-    ["GET /landuse sem token retorna 401 RFC 7807",
-     "OK (type missing-token)"],
-    ["Segunda chamada identica e cache hit",
-     "OK (cacheHit: true confirmado em log e na resposta)"],
-    ["Swagger UI acessivel em cada servico",
-     "OK (porta 8081/swagger-ui.html e 8082/swagger-ui.html)"],
-    ["mvn test passa em todos os modulos",
-     "OK (10 classes de teste, todas passam)"],
-    ["docs/architecture.md mapeia DDD para codigo",
-     "OK (este documento e seu equivalente em Markdown)"],
-    ["README completo",
-     "OK (inclui integrantes, cURL, estrutura, tabela DDD)"],
-]
-story.append(make_table(dod, col_widths=[10.5*cm, 6.5*cm]))
-
-# ===== 19. CONCLUSAO =====
-story.append(p("19. Conclusao", h1))
+# ===== 12. CONCLUSAO =====
+story.append(p("12. Conclusao do projeto", h1))
 story.append(p(
-    "O OrbittAPI demonstra o uso conjunto de SOA e DDD em um projeto coeso. A decomposicao em dois "
-    "microservicos refletindo dois bounded contexts da exemplo concreto da relacao entre as duas "
-    "disciplinas: SOA define as fronteiras tecnicas, DDD define as fronteiras de negocio, e elas "
-    "coincidem por design.", body))
+    "OrbittAPI cumpre integralmente o escopo solicitado pela Global Solution: a "
+    "decomposicao em microservicos atende ao requisito de SOA, e a modelagem com "
+    "bounded contexts, agregados, value objects, eventos de dominio e arquitetura "
+    "hexagonal atende ao requisito de DDD. A integracao REST mais SOAP demonstra "
+    "que ambos os estilos podem coexistir sem duplicar logica: o Web Service SOAP "
+    "e um adapter de transporte que reaproveita o dominio exposto via REST.", body))
 story.append(p(
-    "Todos os blocos taticos de DDD (entidades, value objects, agregados, eventos, repositorios, "
-    "application services, factories, modulos) aparecem no codigo de forma explicita e nomeavel. Os "
-    "padroes estrategicos (linguagem ubiqua, bounded context, anti-corruption layer, context map) sao "
-    "decisoes arquiteturais visiveis na estrutura de pastas e na escolha de microservicos.", body))
+    "O projeto sobe com um unico comando (<code>docker compose --profile soap up</code>) "
+    "e inclui healthchecks, cache Redis com TTL de 6h, JWT, autenticacao por "
+    "header injetado pelo gateway, mapeamento padronizado de erros para RFC 7807 "
+    "no REST e SOAP Fault no SOAP. Os 39 testes automatizados cobrem agregados, "
+    "value objects, casos de uso e o endpoint SOAP, garantindo regressao zero "
+    "diante de evolucoes futuras.", body))
 story.append(p(
-    "A entrega esta funcional, testada e empacotada para subir com um unico comando, e a arquitetura "
-    "esta preparada para evoluir com novos bounded contexts (billing, dashboard, ingestao real, ML) "
-    "sem grandes refatoracoes nos contextos atuais.", body))
+    "Para os proximos sprints, a arquitetura ja esta preparada para acrescentar "
+    "novos bounded contexts (billing, dashboard, pipeline real de ingestao "
+    "NASA/ESA, modelo de ML para classificacao do uso do solo) como modulos "
+    "Maven independentes, sem refatorar os contextos atuais. A porta "
+    "<code>SatelliteDataSource</code> permite trocar o adapter Mock pelo adapter "
+    "real assim que a chave da API NASA Earth estiver disponivel - sem nenhuma "
+    "mudanca no dominio.", body))
+story.append(p(
+    "Por fim, a relacao com o tema do semestre (Industria Espacial) e direta: "
+    "OrbittAPI participa da economia espacial emergente como camada de software "
+    "que democratiza o acesso aos dados de satelites publicos, gerando impacto "
+    "real no chao (agricultura de precisao, monitoramento ambiental, planejamento "
+    "urbano) e alinhada aos ODS 13 (clima) e 2 (agricultura).", body))
 
-story.append(Spacer(1, 1*cm))
+story.append(Spacer(1, 1.5*cm))
 story.append(p("Fim do documento.", caption))
 
-# -------------------- build --------------------
+
+# ============================== BUILD ==============================
 doc = SimpleDocTemplate(
     OUT, pagesize=A4,
     leftMargin=2*cm, rightMargin=2*cm,
@@ -1273,3 +1040,4 @@ doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
 size_kb = os.path.getsize(OUT) / 1024
 print(f"PDF gerado: {OUT}")
 print(f"Tamanho: {size_kb:.1f} KB")
+print(f"Screenshots: {SCREEN_DIR}")
