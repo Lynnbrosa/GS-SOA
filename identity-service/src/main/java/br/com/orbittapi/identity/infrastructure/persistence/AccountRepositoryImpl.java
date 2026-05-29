@@ -37,4 +37,9 @@ public class AccountRepositoryImpl implements AccountRepository {
     public boolean existsByEmail(Email email) {
         return jpa.existsByEmail(email.value());
     }
+
+    @Override
+    public void deleteById(UUID id) {
+        jpa.deleteById(id);
+    }
 }

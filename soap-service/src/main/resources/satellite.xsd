@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:tns="http://orbittapi.dev/soap/satellite"
+    targetNamespace="http://orbittapi.dev/soap/satellite"
+    elementFormDefault="qualified">
+
+    <!-- ===== Tipos compartilhados ===== -->
+
+    <xs:simpleType name="VegetationHealth">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="NONE"/>
+            <xs:enumeration value="SPARSE"/>
+            <xs:enumeration value="MODERATE"/>
+            <xs:enumeration value="DENSE"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="SatelliteSource">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="LANDSAT"/>
+            <xs:enumeration value="SENTINEL"/>
+            <xs:enumeration value="MODIS"/>
+            <xs:enumeration value="MOCK"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="QueryType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="VEGETATION"/>
+            <xs:enumeration value="LAND_USE"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="Latitude">
+        <xs:restriction base="xs:double">
+            <xs:minInclusive value="-90.0"/>
+            <xs:maxInclusive value="90.0"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="Longitude">
+        <xs:restriction base="xs:double">
+            <xs:minInclusive value="-180.0"/>
+            <xs:maxInclusive value="180.0"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- ===== Operacao 1: CONSULTA (consultarVegetacao) ===== -->
+
+    <xs:element name="ConsultarVegetacaoRequest">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="latitude" type="tns:Latitude"/>
+                <xs:element name="longitude" type="tns:Longitude"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="ConsultarVegetacaoResponse">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="latitude" type="xs:double"/>
+                <xs:element name="longitude" type="xs:double"/>
+                <xs:element name="ndvi" type="xs:double"/>
+                <xs:element name="health" type="tns:VegetationHealth"/>
+                <xs:element name="imageDate" type="xs:date"/>
+                <xs:element name="source" type="tns:SatelliteSource"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <!-- ===== Operacao 2: CADASTRO/PROCESSAMENTO (registrarConsulta) ===== -->
+
+    <xs:element name="RegistrarConsultaRequest">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="accountId" type="xs:string"/>
+                <xs:element name="tipo" type="tns:QueryType"/>
+                <xs:element name="latitude" type="tns:Latitude"/>
+                <xs:element name="longitude" type="tns:Longitude"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:element name="RegistrarConsultaResponse">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="queryId" type="xs:string"/>
+                <xs:element name="status" type="xs:string"/>
+                <xs:element name="executedAt" type="xs:dateTime"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+</xs:schema>

@@ -1,0 +1,26 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: soap-service
+
+orbittapi:
+  satellite:
+    base-url: ${SATELLITE_SERVICE_URI:http://localhost:8082}
+    connect-timeout-ms: 3000
+    read-timeout-ms: 8000
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+logging:
+  level:
+    br.com.orbittapi: INFO
+    org.springframework.ws: INFO

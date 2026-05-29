@@ -1,17 +1,24 @@
 # Arquitetura — OrbittAPI Backend
 
 ## 1. Visão geral
-OrbittAPI é uma plataforma SaaS de dados satelitais. Este repositório implementa o backend da Global Solution (SOA + DDD) com **2 microserviços + 1 gateway**, escritos em Java 21 / Spring Boot 3.3, persistindo em PostgreSQL e usando Redis para cache.
+OrbittAPI é uma plataforma SaaS de dados satelitais. Este repositório implementa o backend da Global Solution (SOA + DDD) com **2 microserviços de domínio + 1 API gateway + 1 SOAP gateway opcional**, escritos em Java 21 / Spring Boot 3.3, persistindo em PostgreSQL e usando Redis para cache.
 
 ```
-                       +------------------+
-       Cliente  --->   |     Gateway      |   (porta 8080, valida JWT, injeta X-User-Id)
-                       +--------+---------+
-                                |
-                +---------------+----------------+
-                |                                |
-       +--------v---------+              +-------v----------+
-       | identity-service |              | satellite-service|
+                                                              +-------------+
+                                                              | SOAP client |
+                                                              | (SoapUI...) |
+                                                              +------+------+
+                       +------------------+                          |
+       REST client --->|     Gateway      | porta 8080               | SOAP
+                       |  (valida JWT,    |                          v
+                       |   injeta         |                  +-----------------+
+                       |   X-User-Id)     |                  |  soap-service   | 8083
+                       +--------+---------+                  |  (profile soap, |
+                                |                            |   contract-first)|
+                +---------------+----------------+           +-------+---------+
+                |                                |                   |
+       +--------v---------+              +-------v----------+        | REST interna
+       | identity-service |              | satellite-service|<-------+ (X-User-Id)
        |  (porta 8081)    |              |  (porta 8082)    |
        +--------+---------+              +-------+----------+
                 |                                |
@@ -22,6 +29,10 @@ OrbittAPI é uma plataforma SaaS de dados satelitais. Este repositório implemen
                   identity_db /    cache landuse:/
                   satellite_db     vegetation: TTL 6h
 ```
+
+> O `soap-service` é opcional. `docker compose up` sobe apenas os 5 contêineres
+> originais; `docker compose --profile soap up` adiciona o SOAP. Isso garante
+> compatibilidade total com clientes REST existentes (ex.: app mobile).
 
 ## 2. Bounded contexts (DDD)
 
@@ -54,6 +65,31 @@ Responsável por servir métricas de satélite (uso do solo, NDVI).
 ### 2.3 Gateway (`gateway`)
 Spring Cloud Gateway. Roteamento e validação JWT centralizada. Rotas em `gateway/src/main/resources/application.yml`. Filtro `JwtAuthenticationGatewayFilter` extrai `userId` do token e injeta `X-User-Id`/`X-User-Role` antes de propagar pro serviço destino — assim o satellite-service não precisa revalidar o JWT.
 
+### 2.4 SOAP gateway (`soap-service`, opcional)
+Atende ao requisito da disciplina de SOA. Sobe na porta 8083 quando ativado por `--profile soap`. É **contract-first**:
+
+- O contrato é o XSD `soap-service/src/main/resources/satellite.xsd`.
+- O plugin `jaxb2-maven-plugin` gera as classes Java em `br.com.orbittapi.soap.generated` na fase `generate-sources` do Maven.
+- O `MessageDispatcherServlet` é registrado em `/ws/*` e o WSDL é publicado em `/ws/satellite.wsdl` por um `DefaultWsdl11Definition`.
+- O `@Endpoint` `SatelliteEndpoint` expõe duas operações (`consultarVegetacao` e `registrarConsulta`).
+- O `SoapFaultMappingExceptionResolver` (em `SoapFaultConfig`) traduz `InvalidCoordinateSoapException` em `Client` Fault e `SatelliteUnavailableSoapException` em `Server` Fault.
+
+#### Integração REST ↔ SOAP
+
+O `SatelliteEndpoint` **não reimplementa** o domínio. Ele delega para o `SatelliteRestClient` (um `RestClient` do Spring 6) que chama o satellite-service via HTTP, passando o header `X-User-Id`:
+
+```
+SOAP Body recebido        ->  @Endpoint SatelliteEndpoint
+                          ->  SatelliteRestClient
+                              GET  http://satellite-service:8082/vegetation?lat&lng
+                              POST http://satellite-service:8082/queries  (header X-User-Id)
+                          <-  resposta JSON convertida em ConsultarVegetacaoResponse
+                              / RegistrarConsultaResponse (classes JAXB)
+SOAP Body devolvido
+```
+
+Esse é o padrão exigido pela disciplina: **Web Service SOAP consumindo API REST**. O domínio fica em um único lugar (satellite-service) e a camada SOAP é apenas um *transport adapter*.
+
 ## 3. Mapeamento DDD ↔ código
 
 | Conceito DDD            | Onde aparece                                                                                          |
@@ -61,10 +97,10 @@ Spring Cloud Gateway. Roteamento e validação JWT centralizada. Rotas em `gatew
 | **Entidade**            | `Account` (`identity/domain/model/Account.java`), `SatelliteQuery` (`satellite/domain/model/SatelliteQuery.java`) — possuem id, igualdade por id |
 | **Value Object**        | `Email`, `Password`, `ApiKey`, `Coordinate`, `NdviScore`, `LandUseDistribution` — imutáveis, equals por valor, validação no construtor |
 | **Agregado**            | `Account` protege invariantes de senha/email/API key; `SatelliteQuery` é raiz pequena de auditoria   |
-| **Domain Event**        | `AccountRegistered`, `ApiKeyRevoked`, `QueryExecuted` (`*/domain/event/`) — publicados via `ApplicationEventPublisher` no `SpringDomainEventPublisher` |
+| **Domain Event**        | `AccountRegistered`, `ApiKeyRevoked`, `AccountEmailChanged`, `AccountDeleted`, `QueryExecuted` (`*/domain/event/`) — publicados via `ApplicationEventPublisher` no `SpringDomainEventPublisher` |
 | **Repository (port)**   | `AccountRepository`, `SatelliteQueryRepository` — interfaces em `*/domain/repository/`                |
 | **Repository (impl)**   | `AccountRepositoryImpl`, `SatelliteQueryRepositoryImpl` em `*/infrastructure/persistence/` (JPA)      |
-| **Application Service** | `RegisterAccountUseCase`, `LoginUseCase`, `GetMyProfileUseCase`, `RevokeApiKeyUseCase`, `GetLandUseUseCase`, `GetVegetationUseCase` |
+| **Application Service** | `RegisterAccountUseCase`, `LoginUseCase`, `GetMyProfileUseCase`, `UpdateAccountEmailUseCase`, `RevokeApiKeyUseCase`, `DeleteAccountUseCase`, `GetLandUseUseCase`, `GetVegetationUseCase`, `RegisterQueryUseCase` |
 | **Anti-Corruption Layer** | `SatelliteDataSource` (porta) + `MockSatelliteDataSource` (adapter) — futuro adapter NASA não vaza modelo externo pro domínio |
 | **Ubiquitous Language** | `Account`, `ApiKey`, `SatelliteQuery`, `LandUseDistribution`, `NdviScore`, `VegetationHealth`. Sem `Manager`, `Helper`, `Data`, `Info` |
 

@@ -1,5 +1,7 @@
 package br.com.orbittapi.identity.domain.model;
 
+import br.com.orbittapi.identity.domain.event.AccountDeleted;
+import br.com.orbittapi.identity.domain.event.AccountEmailChanged;
 import br.com.orbittapi.identity.domain.event.AccountRegistered;
 import br.com.orbittapi.identity.domain.event.ApiKeyRevoked;
 import br.com.orbittapi.identity.domain.event.DomainEvent;
@@ -15,7 +17,7 @@ import java.util.UUID;
 public class Account {
 
     private final UUID id;
-    private final Email email;
+    private Email email;
     private Password password;
     private ApiKey apiKey;
     private final AccountRole role;
@@ -56,6 +58,20 @@ public class Account {
         }
         this.apiKey = apiKey.revoke();
         domainEvents.add(ApiKeyRevoked.now(id, apiKey.value()));
+    }
+
+    public void changeEmail(Email newEmail) {
+        Objects.requireNonNull(newEmail, "newEmail");
+        if (this.email.equals(newEmail)) {
+            return;
+        }
+        Email previous = this.email;
+        this.email = newEmail;
+        domainEvents.add(AccountEmailChanged.now(id, previous, newEmail));
+    }
+
+    public void markDeleted() {
+        domainEvents.add(AccountDeleted.now(id, email));
     }
 
     public boolean authenticatesWith(String rawPassword) {

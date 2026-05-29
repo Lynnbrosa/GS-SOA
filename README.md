@@ -32,27 +32,30 @@ OrbittAPI é uma plataforma SaaS de **dados satelitais** (NDVI, uso do solo, ris
 ## Arquitetura
 
 ```
-                       +------------------+
-       Cliente  --->   |     Gateway      |   8080
-                       +--------+---------+   valida JWT, injeta X-User-Id
-                                |
-                +---------------+----------------+
-                |                                |
-       +--------v---------+              +-------v----------+
-       | identity-service |  8081        | satellite-service|  8082
-       |                  |              |                  |
-       | Bounded context: |              | Bounded context: |
-       | Identity&Access  |              | Satellite Data   |
-       +--------+---------+              +-------+----------+
+                                                      +-------------------+
+                                                      |   SOAP client     |
+                                                      | (SoapUI, etc.)    |
+                                                      +---------+---------+
+                       +------------------+                     |
+       REST client --->|     Gateway      |   8080              | SOAP
+                       +--------+---------+                     |
+                                |                               v
+                +---------------+----------------+    +-------------------+
+                |                                |    |   soap-service    | 8083
+       +--------v---------+              +-------v----+--+ (profile soap) |
+       | identity-service |  8081        | satellite-svc |                |
+       |                  |              |     8082      |<--- REST ------+
+       | Bounded context: |              |               | (consome /vegetation
+       | Identity&Access  |              | BC: Satellite |  e /queries)
+       +--------+---------+              +-------+-------+
                 |                                |
                 |    +----------+   +---------+  |
                 +--->| Postgres |   |  Redis  |<-+
                      | 5432     |   | 6379    |
                      +----------+   +---------+
-                identity_db /   cache landuse:{lat}:{lng}
-                satellite_db   vegetation:{lat}:{lng} TTL 6h
 ```
 
+O SOAP é opcional (`--profile soap`) e não interfere com clientes REST (ex.: app mobile).
 Detalhes em [docs/architecture.md](docs/architecture.md).
 
 ---
@@ -87,13 +90,25 @@ orbittapi-backend/
 │       ├── infrastructure/       # MockSatelliteDataSource (adapter), Redis cache, JPA
 │       └── interfaces/rest/      # LandUseController, VegetationController, GlobalExceptionHandler
 │
-└── gateway/                      # Spring Cloud Gateway
+├── gateway/                      # Spring Cloud Gateway
+│   ├── pom.xml
+│   ├── Dockerfile
+│   └── src/main/java/br/com/orbittapi/gateway/
+│       ├── GatewayApplication.java
+│       ├── config/               # JwtProperties
+│       └── filter/               # JwtAuthenticationGatewayFilter (valida + injeta X-User-Id)
+│
+└── soap-service/                 # Web Service SOAP contract-first (opcional, profile "soap")
     ├── pom.xml
     ├── Dockerfile
-    └── src/main/java/br/com/orbittapi/gateway/
-        ├── GatewayApplication.java
-        ├── config/               # JwtProperties
-        └── filter/               # JwtAuthenticationGatewayFilter (valida + injeta X-User-Id)
+    └── src/main/
+        ├── resources/satellite.xsd       # contrato (XSD)
+        └── java/br/com/orbittapi/soap/
+            ├── SoapApplication.java
+            ├── config/                   # WebServiceConfig, RestClientConfig, SoapFaultConfig
+            ├── endpoint/                 # SatelliteEndpoint (@Endpoint)
+            ├── client/                   # SatelliteRestClient (consome satellite-service REST)
+            └── exception/                # excecoes mapeadas para SOAP Fault
 ```
 
 Cada serviço segue a estrutura DDD clássica: `domain → application → infrastructure → interfaces/rest`.
@@ -228,6 +243,129 @@ curl -X POST http://localhost:8080/api-keys/<accountId>/revoke \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
+### 8. Atualizar meu e-mail (CRUD — PUT /me)
+```bash
+curl -X PUT http://localhost:8080/me \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"novo@orbittapi.dev"}'
+```
+Retorna 200 com o `AccountProfileResponse` atualizado. E-mail duplicado → 409 RFC 7807.
+
+### 9. Apagar conta (CRUD — DELETE /accounts/{id}, ADMIN)
+```bash
+curl -X DELETE http://localhost:8080/accounts/<accountId> \
+  -H "Authorization: Bearer <ADMIN_TOKEN>"
+```
+Retorna 204. Sem ADMIN → 403 RFC 7807.
+
+### 10. Registrar consulta (satellite — `POST /queries`)
+Endpoint novo criado para suportar a integração SOAP↔REST (descrita abaixo); aceita também chamada REST direta:
+```bash
+curl -X POST http://localhost:8080/queries \
+  -H "X-User-Id: <accountId>" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"VEGETATION","latitude":-23.5,"longitude":-46.6}'
+```
+
+---
+
+## Web Service SOAP (opcional — `--profile soap`)
+
+Para atender ao requisito de **SOAP + WSDL + integração REST↔SOAP** da disciplina de SOA, há um módulo adicional `soap-service` que sobe na porta **8083** quando ativado por profile. Ele é **contract-first** (definido pelo XSD `soap-service/src/main/resources/satellite.xsd`) e o WSDL é publicado em tempo de execução.
+
+### Subir o SOAP
+```bash
+docker compose --profile soap up --build
+```
+Sem o `--profile soap`, só os 5 contêineres originais sobem (sem regressão para o app mobile).
+
+### WSDL
+- URL: <http://localhost:8083/ws/satellite.wsdl>
+- Namespace: `http://orbittapi.dev/soap/satellite`
+
+### Operações expostas
+
+| Operação | Descrição | Integração interna |
+|---|---|---|
+| `consultarVegetacao` | Recebe `latitude`/`longitude` e devolve NDVI + classificação | chama `GET /vegetation` do satellite-service |
+| `registrarConsulta` | Recebe `accountId`/`tipo`/`latitude`/`longitude` e persiste um `SatelliteQuery`, retornando `queryId`+`status`+`executedAt` | chama `POST /queries` do satellite-service |
+
+Esta é a **integração REST↔SOAP** exigida: o Web Service SOAP **não duplica** o domínio; ele consome a API REST do satellite-service via `RestClient`, passando o header `X-User-Id`.
+
+### Envelope SOAP — request de `consultarVegetacao`
+```xml
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sat="http://orbittapi.dev/soap/satellite">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <sat:ConsultarVegetacaoRequest>
+         <sat:latitude>-23.5</sat:latitude>
+         <sat:longitude>-46.6</sat:longitude>
+      </sat:ConsultarVegetacaoRequest>
+   </soapenv:Body>
+</soapenv:Envelope>
+```
+
+### Envelope SOAP — response
+```xml
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/">
+   <SOAP-ENV:Header/>
+   <SOAP-ENV:Body>
+      <ns2:ConsultarVegetacaoResponse xmlns:ns2="http://orbittapi.dev/soap/satellite">
+         <ns2:latitude>-23.5</ns2:latitude>
+         <ns2:longitude>-46.6</ns2:longitude>
+         <ns2:ndvi>0.42</ns2:ndvi>
+         <ns2:health>MODERATE</ns2:health>
+         <ns2:imageDate>2026-05-10</ns2:imageDate>
+         <ns2:source>MOCK</ns2:source>
+      </ns2:ConsultarVegetacaoResponse>
+   </SOAP-ENV:Body>
+</SOAP-ENV:Envelope>
+```
+
+### Envelope SOAP — `registrarConsulta`
+Request:
+```xml
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:sat="http://orbittapi.dev/soap/satellite">
+   <soapenv:Body>
+      <sat:RegistrarConsultaRequest>
+         <sat:accountId>00000000-0000-0000-0000-000000000501</sat:accountId>
+         <sat:tipo>VEGETATION</sat:tipo>
+         <sat:latitude>-23.5</sat:latitude>
+         <sat:longitude>-46.6</sat:longitude>
+      </sat:RegistrarConsultaRequest>
+   </soapenv:Body>
+</soapenv:Envelope>
+```
+Response (resumido):
+```xml
+<ns2:RegistrarConsultaResponse xmlns:ns2="http://orbittapi.dev/soap/satellite">
+   <ns2:queryId>11111111-2222-3333-4444-555555555555</ns2:queryId>
+   <ns2:status>EXECUTED</ns2:status>
+   <ns2:executedAt>2026-05-26T10:00:00Z</ns2:executedAt>
+</ns2:RegistrarConsultaResponse>
+```
+
+### SOAP Fault (coordenada inválida)
+Latitude fora de `[-90, 90]` no XSD ou recusada pelo satellite-service vira:
+```xml
+<SOAP-ENV:Fault>
+   <faultcode>SOAP-ENV:Client</faultcode>
+   <faultstring>Invalid request</faultstring>
+</SOAP-ENV:Fault>
+```
+Mapeado por `SoapFaultMappingExceptionResolver` (`SoapFaultConfig.java`).
+
+### Como testar no SoapUI
+
+1. Abrir o SoapUI → **File → New SOAP Project**.
+2. **Project Name**: `OrbittAPI SOAP`. **Initial WSDL**: `http://localhost:8083/ws/satellite.wsdl`. Marcar **Create sample requests for all operations**.
+3. Em **SatellitePortBinding** vão aparecer 2 requests: `ConsultarVegetacaoRequest` e `RegistrarConsultaRequest`. Substituir `?` pelos valores do exemplo acima.
+4. Clicar em ▶. A resposta XML aparece à direita.
+5. Para testar Fault, mandar `latitude=95` → o servidor responde `SOAP-ENV:Fault` com `faultcode=Client`.
+
 ---
 
 ## Swagger UI
@@ -248,8 +386,11 @@ mvn test
 Inclui:
 - **Unit tests dos agregados**: invariantes + emissão de eventos (`AccountTest`, `SatelliteQueryTest`)
 - **Unit tests de value objects**: `EmailTest`, `PasswordTest`, `CoordinateTest`, `NdviScoreTest`, `LandUseDistributionTest`
-- **Unit tests de use cases** (com mocks): `RegisterAccountUseCaseTest`, `GetLandUseUseCaseTest`
+- **Unit tests de use cases** (com mocks): `RegisterAccountUseCaseTest`, `UpdateAccountEmailUseCaseTest`, `DeleteAccountUseCaseTest`, `GetLandUseUseCaseTest`
 - **Determinismo do adapter Mock**: `MockSatelliteDataSourceTest`
+- **Endpoint SOAP** com REST client mockado: `SatelliteEndpointTest` (consulta + cadastro + Fault)
+
+Total: **39 testes** passando.
 
 ---
 
@@ -265,6 +406,8 @@ Inclui:
 | US-10  | `GlobalExceptionHandler` + RFC 7807                           |
 | US-21  | Redis cache TTL 6h (`RedisSatelliteQueryCache`)               |
 | US-22  | Hash BCrypt, sem PII em log                                   |
+| CRUD   | `PUT /me` (update email), `DELETE /accounts/{id}` (ADMIN)     |
+| SOA    | `soap-service` (porta 8083) com WSDL contract-first, integração REST↔SOAP |
 
 Outras histórias (front-end, billing, MFA, ingestão NASA real, ML) são extensíveis sem alterar os bounded contexts atuais — basta novos adapters/serviços.
 

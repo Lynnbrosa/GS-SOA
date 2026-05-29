@@ -15,4 +15,6 @@ public interface AccountRepository {
     Optional<Account> findByEmail(Email email);
 
     boolean existsByEmail(Email email);
+
+    void deleteById(UUID id);
 }

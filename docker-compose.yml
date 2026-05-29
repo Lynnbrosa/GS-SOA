@@ -82,6 +82,23 @@ services:
     ports:
       - "8080:8080"
 
+  # SOAP gateway opcional. So sobe quando explicitamente ativado:
+  #   docker compose --profile soap up
+  # Mantemos fora do default para nao impactar quem consome so a API REST (ex.: app mobile).
+  soap-service:
+    build:
+      context: .
+      dockerfile: soap-service/Dockerfile
+    container_name: orbittapi-soap
+    profiles: ["soap"]
+    depends_on:
+      satellite-service:
+        condition: service_started
+    environment:
+      SATELLITE_SERVICE_URI: http://satellite-service:8082
+    ports:
+      - "8083:8083"
+
 volumes:
   orbittapi-postgres-data:
   orbittapi-redis-data:
